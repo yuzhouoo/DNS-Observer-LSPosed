@@ -102,6 +102,10 @@ public final class DnsForwardService extends Service {
                 throw new IllegalArgumentException("请填写上游 DNS 域名");
             if (port < 1 || port > 65535) throw new IllegalArgumentException("上游端口不合法");
             if (backupIp != null && !backupIp.trim().isEmpty()) DnsBootstrap.parseLiteral(backupIp.trim());
+            // Clear a stale redirect BEFORE asking Android's system resolver.
+            // Even our app's getAllByName may be sent over netd/dnsresolver UID.
+            DnsRootRules.remove(this);
+            if (cancellationRequested) throw new IOException("用户已取消 DNS 接管启动");
             InetAddress[] resolved = DnsBootstrap.resolve(host.trim(), backupIp);
             if (resolved.length == 0) throw new IOException("无法解析上游 DNS 域名");
             upstream = resolved;
@@ -275,10 +279,12 @@ public final class DnsForwardService extends Service {
                 writeState(false, "上游连续请求失败，已触发自动恢复");
                 stopNow(); return;
             }
-            // Conservative 5-minute bootstrap refresh. Android getAllByName does not expose TTL.
-            if (++checks % 25 == 0) {
+            // Never call system getAllByName while redirect is active: on Android
+            // the resolver's network packets may have the dnsresolver UID, not app UID.
+            // Only explicitly configured raw-IP Bootstrap is safe during interception.
+            if (++checks % 25 == 0 && backupIp != null && !backupIp.trim().isEmpty()) {
                 try {
-                    InetAddress[] latest = DnsBootstrap.resolve(host.trim(), backupIp);
+                    InetAddress[] latest = DnsBootstrap.resolveOnlyViaBackup(host.trim(), backupIp);
                     if (latest.length > 0) upstream = latest;
                 } catch (Exception ignored) { /* Keep the last known addresses. */ }
             }

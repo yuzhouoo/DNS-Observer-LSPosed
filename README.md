@@ -91,7 +91,7 @@ AOSP DnsResolver / netd  -> NetdEventListenerService.onDnsEvent (system_server)
 3. 点击「检测上游 UDP/TCP DNS」；会分别进行真实 DNS 报文探测，不执行 Root 命令。
 4. 启动时先解析上游域名，再进行 UDP DNS 探测，然后绑定 `127.0.0.1:15353`（按需还绑定 `::1:15353`），最后安装 Root NAT 规则。失败时自动调用专属规则清理。
 5. NAT 仅处理本机 `OUTPUT` 中的普通 UDP/TCP 53，使用专属 `DOBSR53` 链，并从转发中排除 App 自身 UID、IPv4/IPv6 回环地址；不修改系统 DNS 属性、不覆盖其它规则、不改系统分区。
-6. 上游域名按约 5 分钟间隔更新一次，使用系统 DNS（App UID 不被重定向），系统 DNS 解析失败可经指定纯 IP Bootstrap DNS 查询 A/AAAA。由于 Android 系统解析器不暴露 TTL，这里不是精确按 TTL 更新。
+6. 接管前清理自身可能残留的规则，再使用系统 DNS 预解析上游域名；失败时可经备用纯 IP Bootstrap 查询 A/AAAA。**接管启用后绝不再调用系统 DNS 解析上游域名**：Android dnsresolver 可能以非 App UID 发包。若配置纯 IP Bootstrap，约每 5 分钟通过 App 的直接 UDP Socket 更新上游 IP；未配置时保持预解析 IP，失效后安全回滚。这里不是精确按 TTL 更新。
 7. 持续上游错误后尝试恢复原系统 DNS。另有 Root shell watchdog 检查主 App 进程及工作规则，尝试在进程死亡后清理专属链。**无法保证所有设备都能自动回滚**。
 8. 页面可手动关闭、紧急清理规则。不开机自启，无常驻 KernelSU 模块；关掉接管不影响原有 DNS 监控。
 

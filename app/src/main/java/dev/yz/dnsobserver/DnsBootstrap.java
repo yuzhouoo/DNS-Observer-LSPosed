@@ -35,6 +35,22 @@ public final class DnsBootstrap {
         return found.toArray(new InetAddress[0]);
     }
 
+    /**
+     * Safe while interception is ACTIVE: raw UDP 53 from this app UID only.
+     * Never call system getAllByName(host) here, because Android's DNS Resolver
+     * process may issue the upstream query under a different UID.
+     */
+    public static InetAddress[] resolveOnlyViaBackup(String host, String backupIp) throws Exception {
+        InetAddress bootstrap = parseLiteral(backupIp == null ? "" : backupIp.trim());
+        List<InetAddress> found = new ArrayList<>();
+        for (int rr : new int[]{1, 28}) {
+            try { found.addAll(resolveViaIp(host, bootstrap, rr)); }
+            catch (Exception ignored) { }
+        }
+        if (found.isEmpty()) throw new IllegalStateException("Bootstrap 纯 IP DNS 无响应");
+        return found.toArray(new InetAddress[0]);
+    }
+
     /** Do not accept a hostname as the bootstrap resolver (prevents recursion). */
     static InetAddress parseLiteral(String value) throws Exception {
         if (value == null || value.isEmpty()) throw new IllegalArgumentException("Bootstrap IP 为空");

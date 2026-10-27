@@ -127,6 +127,10 @@ public final class DnsControlActivity extends Activity {
         } catch(Exception e){status.setText("配置错误："+e.getMessage());}
     }
     private void testServer() {
+        if (prefs.getBoolean("running", false)) {
+            status.setText("请先停止接管再检测，避免在接管过程中调用系统 Bootstrap DNS");
+            return;
+        }
         final String name;
         final String backup;
         final int upstreamPort;
