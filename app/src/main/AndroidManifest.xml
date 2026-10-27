@@ -4,6 +4,9 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- Android 14+ JobScheduler network constraint, and LinkProperties DNS lookup. -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- App-name resolution is core to this on-device, all-app DNS audit tool.
+         Broader package visibility is used for local UID->human-readable label only. -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <application

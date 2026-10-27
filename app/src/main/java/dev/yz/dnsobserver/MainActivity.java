@@ -69,6 +69,11 @@ public final class MainActivity extends Activity {
         database = new DnsDb(this);
         prefs = getSharedPreferences(SecureProvider.PREFS, 0);
         buildUi();
+        // Best-effort old-record label upgrade. Work off the main thread.
+        io.execute(() -> {
+            try { database.backfillAppNames(getApplicationContext()); }
+            catch (Throwable ex) { android.util.Log.w("DNSObserver", "Label backfill skipped", ex); }
+        });
     }
 
     private void buildUi() {

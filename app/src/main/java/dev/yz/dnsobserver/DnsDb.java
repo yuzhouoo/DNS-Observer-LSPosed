@@ -144,6 +144,52 @@ public final class DnsDb extends SQLiteOpenHelper {
         return result;
     }
 
+    /**
+     * Upgrade old v0.4.0 appName='' rows using newly visible app labels.
+     * Never backfill DNS protocol/server: an old lookup has no recoverable
+     * historical transport or server identity.
+     * Called off the UI thread at most once per Activity instance.
+     */
+    public synchronized void backfillAppNames(Context context) {
+        SQLiteDatabase sql = getWritableDatabase();
+        java.util.LinkedHashMap<String,String> labels = new java.util.LinkedHashMap<>();
+        try (Cursor c = sql.rawQuery(
+                "SELECT DISTINCT packages FROM records WHERE appName='' OR appName='未知应用' LIMIT 600",
+                null)) {
+            while(c.moveToNext()) {
+                String packageText=c.getString(0);
+                if(packageText==null||packageText.isEmpty()||packageText.startsWith("UID ")) continue;
+                String resolved="";
+                for(String raw : packageText.split(",")) {
+                    String pkg=raw.trim();
+                    if(pkg.isEmpty())continue;
+                    try {
+                        android.content.pm.ApplicationInfo info=
+                                context.getPackageManager().getApplicationInfo(pkg,0);
+                        CharSequence found=context.getPackageManager().getApplicationLabel(info);
+                        if(found!=null && found.length()>0) {
+                            resolved=TextPolicy.clamp(found.toString(),160);
+                            break;
+                        }
+                    } catch (Exception ignored) { }
+                }
+                if(!resolved.isEmpty()) labels.put(packageText,resolved);
+            }
+        }
+        if(labels.isEmpty())return;
+        sql.beginTransaction();
+        try {
+            for(java.util.Map.Entry<String,String> entry:labels.entrySet()) {
+                ContentValues values=new ContentValues();
+                values.put("appName",entry.getValue());
+                sql.update("records",values,
+                        "packages=? AND (appName='' OR appName='未知应用')",
+                        new String[]{entry.getKey()});
+            }
+            sql.setTransactionSuccessful();
+        } finally {sql.endTransaction();}
+    }
+
     public synchronized void clearAll() {
         getWritableDatabase().delete("records", null, null);
     }

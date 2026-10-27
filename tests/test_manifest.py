@@ -6,6 +6,7 @@ manifest=ET.parse(root/"app/src/main/AndroidManifest.xml").getroot()
 android="{http://schemas.android.com/apk/res/android}"
 permissions={x.get(android+"name") for x in manifest.findall("uses-permission")}
 assert "android.permission.ACCESS_NETWORK_STATE" in permissions, "ACCESS_NETWORK_STATE required for Android 14+ network-constrained JobScheduler"
+assert "android.permission.QUERY_ALL_PACKAGES" in permissions, "Auditing arbitrary UIDs requires Android package-label visibility"
 application=manifest.find("application")
 assert any(x.get(android+"name")==".DnsControlActivity" for x in application.findall("activity")), "DNS control activity missing"
 assert any(x.get(android+"name")==".DnsUpstreamJob" for x in application.findall("service")), "Upstream JobService missing"
