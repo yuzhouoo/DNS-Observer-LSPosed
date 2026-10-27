@@ -114,11 +114,12 @@ public final class DnsForwardService extends Service {
             // Even our app's getAllByName may be sent over netd/dnsresolver UID.
             DnsRootRules.remove(this);
             if (cancellationRequested) throw new IOException("用户已取消 DNS 接管启动");
-            InetAddress[] resolved = DnsBootstrap.resolve(host.trim(), backupIp);
-            if (resolved.length == 0) throw new IOException("无法解析上游 DNS 域名");
-            upstream = resolved;
-            // Proof of protocol response BEFORE touching firewall rules.
-            boolean primaryAvailable=probeUpstream();
+            InetAddress[] resolved;
+            try { resolved=DnsBootstrap.resolve(host.trim(), backupIp); }
+            catch (Exception e) { resolved=new InetAddress[0]; }
+            upstream=resolved;
+            // Failure of primary bootstrap must not prevent trying a configured backup.
+            boolean primaryAvailable=resolved.length>0 && probeUpstream();
             if (secondaryHost!=null && !secondaryHost.trim().isEmpty()) {
                 try {
                     secondaryUpstream=DnsBootstrap.resolve(secondaryHost.trim(),backupIp);
