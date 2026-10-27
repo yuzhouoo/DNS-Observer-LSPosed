@@ -38,6 +38,8 @@ public final class DnsForwardService extends Service {
     private static final int TIMEOUT = 3000;
 
     private volatile boolean running, activated;
+    private volatile boolean cancellationRequested;
+    private final Object firewallLock = new Object();
     private volatile InetAddress[] upstream = new InetAddress[0];
     private volatile String host, backupIp;
     private volatile int port;
@@ -56,6 +58,7 @@ public final class DnsForwardService extends Service {
         if (intent == null) return START_NOT_STICKY;
         String action = intent.getAction();
         if (ACTION_STOP.equals(action)) {
+            cancellationRequested = true;
             new Thread(this::stopNow, "DNS-stop").start();
             return START_NOT_STICKY;
         }
@@ -104,14 +107,19 @@ public final class DnsForwardService extends Service {
             upstream = resolved;
             // Proof of protocol response BEFORE touching firewall rules.
             if (!probeUpstream()) throw new IOException("上游 DNS UDP 服务器未返回有效响应");
+            if (cancellationRequested) throw new IOException("用户已取消 DNS 接管启动");
             bindSockets();
             workers = new ThreadPoolExecutor(4, 10, 30, TimeUnit.SECONDS,
                     new ArrayBlockingQueue<>(200));
             running = true;
             startListeners();
-            // Other apps are still using original DNS at this point.
-            DnsRootRules.install(this, useIpv6, session);
-            activated = true;
+            // Serialize installation/removal to prevent a late install after STOP.
+            synchronized (firewallLock) {
+                if (cancellationRequested) throw new IOException("用户已取消 DNS 接管启动");
+                DnsRootRules.install(this, useIpv6, session);
+                activated = true;
+            }
+            if (cancellationRequested) { stopNow(); return; }
             writeState(true, "接管已启动 · " + resolved.length + " 个上游地址");
             Thread health = new Thread(this::healthLoop, "DNS-health");
             health.setDaemon(true);
@@ -282,13 +290,17 @@ public final class DnsForwardService extends Service {
     }
 
     private synchronized void stopNow() {
-        boolean wasActive = activated;
-        running = false;
-        activated = false;
-        // Restore original DNS path BEFORE closing the sockets.
+        cancellationRequested = true;
+        boolean wasActive;
         String recoveryError = null;
-        try { DnsRootRules.remove(this); }
-        catch (Exception e) { recoveryError = brief(e); }
+        synchronized (firewallLock) {
+            wasActive = activated;
+            running = false;
+            activated = false;
+            // Restore original DNS path BEFORE closing the sockets.
+            try { DnsRootRules.remove(this); }
+            catch (Exception e) { recoveryError = brief(e); }
+        }
         close(udp4); close(udp6); close(tcp4); close(tcp6);
         if (workers != null) workers.shutdownNow();
         String previous = getSharedPreferences(PREFS, MODE_PRIVATE).getString("status", "");
@@ -310,6 +322,7 @@ public final class DnsForwardService extends Service {
                 .putLong("updated", System.currentTimeMillis()).apply();
     }
     @Override public void onDestroy() {
+        cancellationRequested = true;
         if (running || activated) new Thread(this::stopNow, "DNS-destroy-cleanup").start();
         super.onDestroy();
     }
