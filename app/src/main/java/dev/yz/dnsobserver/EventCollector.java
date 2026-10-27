@@ -127,11 +127,17 @@ public final class EventCollector {
                         if (names != null && names.length > 0) {
                             event.putString("packages", TextPolicy.clamp(
                                     android.text.TextUtils.join(", ", names), 400));
-                            try {
-                                ApplicationInfo ai=ctx.getPackageManager().getApplicationInfo(names[0],0);
-                                CharSequence name=ctx.getPackageManager().getApplicationLabel(ai);
-                                if(name!=null) event.putString("appName",TextPolicy.clamp(name.toString(),160));
-                            } catch(Throwable ignored) { }
+                            // Shared UIDs may contain multiple packages. Try each label.
+                            for (String pkg : names) {
+                                try {
+                                    ApplicationInfo ai=ctx.getPackageManager().getApplicationInfo(pkg,0);
+                                    CharSequence name=ctx.getPackageManager().getApplicationLabel(ai);
+                                    if(name!=null && name.length()>0) {
+                                        event.putString("appName",TextPolicy.clamp(name.toString(),160));
+                                        break;
+                                    }
+                                } catch(Throwable ignored) { }
+                            }
                         }
                     }
                     Bundle payload = new Bundle();

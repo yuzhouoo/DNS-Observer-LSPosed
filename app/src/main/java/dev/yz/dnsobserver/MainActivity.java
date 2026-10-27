@@ -80,7 +80,7 @@ public final class MainActivity extends Activity {
 
         TextView title = text("DNS Observer", 27, TEXT, true);
         main.addView(title);
-        TextView subtitle = text("系统 DNS 观察 · LSPosed API 102 · v0.4.0", 12, MUTED, false);
+        TextView subtitle = text("系统 DNS 观察 · LSPosed API 102 · v0.4.1", 12, MUTED, false);
         subtitle.setPadding(0, dp(2), 0, dp(12));
         main.addView(subtitle);
 
@@ -303,8 +303,13 @@ public final class MainActivity extends Activity {
             result.setPadding(dp(8),0,0,0);
             heading.addView(result);
             card.addView(heading);
-            TextView app=text((e.appName==null||e.appName.isEmpty()?"未知应用":e.appName)
-                    +" · "+e.packages,12,MUTED,false);
+            // Old v0.4.0 rows have no appName; never discard their known package.
+            String appLabel=e.appName;
+            if(appLabel==null || appLabel.isEmpty() || "未知应用".equals(appLabel)) {
+                String knownPkg=e.packages==null?"":e.packages.trim();
+                appLabel=knownPkg.isEmpty()?("UID "+e.uid):knownPkg.split(",",2)[0].trim();
+            }
+            TextView app=text(appLabel+" · "+e.packages,12,MUTED,false);
             app.setPadding(0,dp(6),0,dp(3));card.addView(app);
             String addresses=e.ips==null?"":e.ips;
             String[] addressList=addresses.isEmpty()?new String[0]:addresses.split(", ");
@@ -317,7 +322,11 @@ public final class MainActivity extends Activity {
             if(many) ip.setOnClickListener(new View.OnClickListener(){boolean expanded;
                 @Override public void onClick(View v){expanded=!expanded;ip.setText(expanded?addresses:preview);}
             });
-            TextView dns=text("DNS 类型："+safe(e.dnsType)+"\nDNS 服务器："+safe(e.dnsServer),
+            String dnsKind=(e.dnsType==null||e.dnsType.isEmpty()||"未知".equals(e.dnsType))
+                    ?"系统解析事件（未观测到传输协议）":e.dnsType;
+            String server=(e.dnsServer==null||e.dnsServer.isEmpty()||"未知".equals(e.dnsServer))
+                    ?"历史事件无服务器快照":e.dnsServer;
+            TextView dns=text("DNS 类型："+dnsKind+"\nDNS 服务器："+server,
                     12,MUTED,false);
             dns.setPadding(0,dp(5),0,dp(4));card.addView(dns);
             TextView source=text(safe(e.dnsSource),11,MUTED,false);card.addView(source);

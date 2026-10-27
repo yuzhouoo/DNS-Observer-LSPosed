@@ -19,7 +19,17 @@ public final class DnsUpstreamJob extends JobService {
                 .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
                 .setPeriodic(15*60*1000L)
                 .build();
-        jobs.schedule(info);
+        try {
+            int result = jobs.schedule(info);
+            if (result == JobScheduler.RESULT_FAILURE) {
+                android.util.Log.w("DNSObserver", "Upstream health schedule was rejected");
+            }
+        } catch (SecurityException | IllegalArgumentException e) {
+            // The settings screen must remain usable even when ROM rejects a job.
+            android.util.Log.w("DNSObserver", "Upstream health scheduling unavailable", e);
+        } catch (RuntimeException e) {
+            android.util.Log.w("DNSObserver", "Upstream health scheduling failed", e);
+        }
     }
     @Override public boolean onStartJob(JobParameters params) {
         cancelled=false;

@@ -1,4 +1,4 @@
-# DNS Observer — LSPosed module v0.4.0 (API 102)
+# DNS Observer — LSPosed module v0.4.1 (API 102)
 
 **专为系统 DNS 解析记录设计的独立 LSPosed 模块，Java + Android 原生视图，不需要 KernelSU 模块、VPN、网络权限。**
 
@@ -117,7 +117,7 @@ su -c 'iptables -t nat -F DOBSR53; iptables -t nat -X DOBSR53'
 ```
 
 
-## v0.4.0 功能和准确性说明
+## v0.4.1 功能和准确性说明
 
 - 原有全局 LSPosed 监听保持不变；日志可筛选成功/失败，折叠多 IP，显示应用名/包名/解析结果/解析类型和 DNS 服务器地址。
 - **协议证据限制**：系统的 `NetdEventListenerService.onDnsEvent` 没有 DoH/DoT 流量协议字段；记录中显示的是系统 LinkProperties 的默认网络私人 DNS / DNS 列表快照，或接管器配置的上游，明确标注为配置快照，不是按次真实网络抓包。应用私有 DoH 可能根本不产生系统事件，绝不误标为 DoH。
@@ -126,3 +126,12 @@ su -c 'iptables -t nat -F DOBSR53; iptables -t nat -X DOBSR53'
 - 在未接管时使用 Android JobScheduler 每约 15 分钟执行健康检查及 DNS 域名刷新（Android 的 Doze 可能延迟）。进入 DNS 接管配置页后启动此系统调度；打开配置页还能立即手动检测。历史保存最近 30 天/1000 项，包括失败原因/IP/延时。
 - 数据库从 schema 1 自动迁移到 2，保留旧日志，旧日志新字段显示“未知”。
 - **Root 接管有风险，首次应先检测并手动开启，不启用开机自动接管。** 如果失败应使用关闭/紧急恢复，并验证手机网络恢复。
+
+## v0.4.1: Android 16 诊断修复
+
+- 修复 DNS 接管页打开时可能出现的 `SecurityException`：`JobScheduler.setRequiredNetworkType(ANY)` 在 Android 14+ 要求 `ACCESS_NETWORK_STATE`；添加清单权限，并在调度被 ROM 拒绝时捕获异常，保障页面可用。
+- 使用 App 进程的 `ConnectivityManager.getLinkProperties()` 再次解析每条记录的 `netId` 对应网络（无法定位时仅尝试默认网络），并记录配置来源。保留 LSPosed 采集逻辑。
+- 对无法读取的应用名称，依次尝试 UID 对应包名，历史记录优先显示已保存包名而非“未知应用”。
+- Android 的 onDnsEvent 不包含实际 DNS 上游地址和 DoH/DoT 报文字段；显示的 DNS 服务器是网络配置快照或 Root 接管配置，而非已抓到单次包的真实目标。
+- 历史记录未保存的字段无法倒推过去的真实 DNS 服务器/协议，不对旧数据伪造补录。升级后新记录将尝试保存网络配置和应用名称。
+- 即使接管页面打开成功，Root NAT 接管也尚未在 OnePlus 12 / ColorOS 16 上实机验证；建议先通过“检测上游”再选择手动启用。

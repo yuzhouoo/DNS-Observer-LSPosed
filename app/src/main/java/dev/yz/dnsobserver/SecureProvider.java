@@ -45,6 +45,9 @@ public final class SecureProvider extends ContentProvider {
         if (prefs.getBoolean("enabled", true)) {
             ArrayList<Bundle> records = extras.getParcelableArrayList("events");
             if (records != null && records.size() <= 50) {
+                // system_server's environment may not expose a caller network/label.
+                // Read a permission-backed network snapshot in the app process instead.
+                DnsMetadata.enrichBatch(getContext(), records);
                 SharedPreferences proxy=getContext().getSharedPreferences(DnsForwardService.PREFS,0);
                 if (proxy.getBoolean("running",false)) {
                     String ip=proxy.getString("current_ip","");

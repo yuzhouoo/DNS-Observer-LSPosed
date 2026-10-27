@@ -2,6 +2,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <!-- DNS forwarding uses raw UDP/TCP sockets. No VPN or QUERY_ALL_PACKAGES. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Android 14+ JobScheduler network constraint, and LinkProperties DNS lookup. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <application
