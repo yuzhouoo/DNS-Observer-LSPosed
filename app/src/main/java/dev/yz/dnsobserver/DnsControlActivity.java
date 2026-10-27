@@ -84,14 +84,19 @@ public final class DnsControlActivity extends Activity {
             startService(stop);
             status.setText("正在停止并恢复原始 DNS 路径…");
         });
-        button("紧急清理 Root 重定向规则",root).setOnClickListener(v->new Thread(()->{
+        button("紧急清理 Root 重定向规则",root).setOnClickListener(v->{
+            // Request cancellation first so installation cannot race the cleanup.
+            startService(new Intent(this,DnsForwardService.class)
+                    .setAction(DnsForwardService.ACTION_STOP));
+            new Thread(()->{
             try {
                 DnsRootRules.remove(this);
                 ui.post(()->status.setText("已发送 Root 规则清理命令。若仍有服务运行请点关闭接管。"));
             } catch(Exception e) {
                 ui.post(()->status.setText("Root 清理失败："+e.getMessage()));
             }
-        },"DNS-emergency").start());
+        },"DNS-emergency").start();
+        });
         root.addView(label("安全说明：本模块只清理 DOBSR53 专属防火墙链，不清空系统规则。单独的 Root 监视脚本会在应用进程消失时尝试回滚；无法保证所有 ROM / Root 实现上的绝对自动恢复。",12,SECOND));
     }
     private void persist() {
