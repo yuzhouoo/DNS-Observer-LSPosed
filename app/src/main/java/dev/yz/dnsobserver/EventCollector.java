@@ -28,6 +28,7 @@ public final class EventCollector {
     private Handler worker;
     private long dropped;
     private String lastError = "";
+    private long lastErrorLogMs;
 
     public static EventCollector get() { return INSTANCE; }
     private EventCollector() { }
@@ -38,7 +39,9 @@ public final class EventCollector {
         HandlerThread t = new HandlerThread("DnsObserverWriter", Process.THREAD_PRIORITY_BACKGROUND);
         t.start();
         worker = new Handler(t.getLooper());
-        worker.post(flush);
+        // Avoid trying to launch a third-party provider in early system boot.
+        worker.postDelayed(flush, 12_000L);
+        de.robv.android.xposed.XposedBridge.log("DNSObserver: collector started");
     }
 
     public void accept(int netId, int eventType, int returnCode, int latency,
@@ -111,7 +114,14 @@ public final class EventCollector {
                     if (!pending.isEmpty()) delay = 120L;
                 }
             } catch (Throwable t) {
-                lastError = t.getClass().getSimpleName();
+                String error = t.getClass().getSimpleName() + ": "
+                        + TextPolicy.clamp(t.getMessage(), 100);
+                long now = SystemClock.elapsedRealtime();
+                if (!error.equals(lastError) || now - lastErrorLogMs > 60_000L) {
+                    de.robv.android.xposed.XposedBridge.log("DNSObserver: IPC retry: " + error);
+                    lastErrorLogMs = now;
+                }
+                lastError = error;
                 delay = RETRY_MS;
                 // Restore the failed batch at the head, preserving order as much as possible.
                 synchronized (EventCollector.this) {

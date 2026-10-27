@@ -232,20 +232,33 @@ public final class MainActivity extends Activity {
             try {
                 DnsDb.Stats summary = database.stats();
                 List<DnsDb.Entry> items = database.latest(query, f);
+                boolean localProviderOk;
+                try {
+                    Bundle probe = getContentResolver().call(
+                            Uri.parse("content://" + SecureProvider.AUTHORITY),
+                            "selfTest", null, null);
+                    localProviderOk = probe != null && probe.getBoolean("ok", false);
+                } catch (Throwable ignored) {
+                    localProviderOk = false;
+                }
+                final boolean providerReady = localProviderOk;
                 ui.post(() -> {
                     if (!active || index != requests.get()) return;
                     stats.setText("记录 " + summary.total + "  ·  域名 " + summary.domains +
                             "  ·  失败 " + summary.failures);
                     long hb = prefs.getLong("heartbeat", 0L);
                     boolean live = hb > 0 && System.currentTimeMillis() - hb < 25000L;
-                    state.setText(live ? "● 系统 DNS Hook 已连接" : "○ 未检测到系统 Hook 心跳");
+                    state.setText(live ? "● 系统端心跳正常"
+                            : providerReady ? "○ 系统端无心跳（App 存储通道正常）"
+                            : "○ 系统端无心跳（App 存储通道异常）");
                     state.setTextColor(live ? GREEN : RED);
                     long dropped = prefs.getLong("lost", 0L);
                     String err = prefs.getString("lastError", "");
                     note.setText("保存最近 14 天 / 最多 20,000 条" +
                             (dropped > 0 ? "  ·  队列丢失 " + dropped : "") +
                             (!err.isEmpty() ? "  ·  IPC: " + err : "") +
-                            (prefs.getBoolean("enabled", true) ? "" : "  ·  已暂停"));
+                            (prefs.getBoolean("enabled", true) ? "" : "  ·  已暂停") +
+                            (live ? "" : "  ·  检查 LSPosed 日志 DNSObserver:"));
                     render(items);
                 });
             } catch (Throwable t) {

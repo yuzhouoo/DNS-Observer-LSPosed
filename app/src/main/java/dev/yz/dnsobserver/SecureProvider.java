@@ -25,6 +25,13 @@ public final class SecureProvider extends ContentProvider {
     }
 
     @Override public Bundle call(String method, String arg, Bundle extras) {
+        if ("selfTest".equals(method)) {
+            // App-local read-only check, NEVER writes or forges a system Hook heartbeat.
+            if (Binder.getCallingUid() != Process.myUid()) throw new SecurityException("app only");
+            Bundle out = new Bundle();
+            out.putBoolean("ok", true);
+            return out;
+        }
         if (!"appendBatch".equals(method)) throw new SecurityException("invalid operation");
         if (Binder.getCallingUid() != Process.SYSTEM_UID) throw new SecurityException("system only");
         Bundle result = new Bundle();

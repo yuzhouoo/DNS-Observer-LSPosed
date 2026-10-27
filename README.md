@@ -1,4 +1,4 @@
-# DNS Observer — LSPosed module v0.1.1
+# DNS Observer — LSPosed module v0.1.2
 
 **专为系统 DNS 解析记录设计的独立 LSPosed 模块，Java + Android 原生视图，不需要 KernelSU 模块、VPN、网络权限。**
 
@@ -63,6 +63,15 @@ AOSP DnsResolver / netd  -> NetdEventListenerService.onDnsEvent (system_server)
 ```
 
 不会修改原始 DNS 返回值，不会抓包、不启动本地 DNS 服务器，也不会和 Mihomo/SmartDNS/AdGuardHome 争夺 53 端口。
+
+## v0.1.2 心跳诊断
+
+- 系统生命周期 Hook 和 DNS Hook 分开安装，不再因 DNS 方法不存在而跳过心跳初始化。
+- 系统生命周期采用 Android 16 `createSystemContext`，并用 `startOtherServices` 作为单独的容错入口；后台工作线程延后 12 秒开始访问 App Provider，降低开机阶段干扰。
+- App 显示本地 Provider 健康状态。**本地 Provider 正常不代表系统 Hook 已加载**。
+- 在 LSPosed 模块日志中查找 `DNSObserver:`，包括 `entry reached`、`lifecycle ... hooks=`、`collector started`、`system DNS hook installed` 和 `IPC retry:`。
+- 若只有 `DNS hook unavailable`，可能是 ColorOS 类位置差异；若没有 `entry reached`，应检查模块启用和系统框架作用域。
+- 系统 Hook 运行在 `system_server`，有潜在开机异常风险。请先确认恢复方式，避免多次盲目重启。
 
 ## 当前验证状态
 
