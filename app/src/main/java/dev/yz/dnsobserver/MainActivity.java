@@ -94,6 +94,14 @@ public final class MainActivity extends Activity {
         overview.addView(note);
         main.addView(overview);
 
+        Button dnsControl = new Button(this);
+        dnsControl.setText("DNS 接管设置（需要 Root）");
+        dnsControl.setTextSize(13);
+        dnsControl.setAllCaps(false);
+        dnsControl.setOnClickListener(v -> startActivity(
+                new Intent(this, DnsControlActivity.class)));
+        main.addView(dnsControl, new LinearLayout.LayoutParams(-1, dp(44)));
+
         LinearLayout controls = new LinearLayout(this);
         controls.setGravity(Gravity.CENTER_VERTICAL);
         controls.setPadding(0, dp(10), 0, dp(6));

@@ -29,6 +29,17 @@ jobs:
           SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -path '*/bin/sdkmanager' | sort -V | tail -n 1)"
           test -n "$SDKMANAGER"
           "$SDKMANAGER" --install 'platforms;android-35' 'build-tools;35.0.0'
+      - name: Check DNS protocol helpers and Root shell syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          sh -n app/src/main/assets/dns-root.sh
+          mkdir -p /tmp/dnsobserver-jvm
+          javac -encoding UTF-8 -d /tmp/dnsobserver-jvm \
+            app/src/main/java/dev/yz/dnsobserver/DnsPacket.java \
+            app/src/main/java/dev/yz/dnsobserver/DnsBootstrap.java \
+            tests/DnsPacketTest.java
+          java -cp /tmp/dnsobserver-jvm dev.yz.dnsobserver.DnsPacketTest
       - name: Build debug APK
         run: gradle --no-daemon :app:assembleDebug
       - name: Verify modern LSPosed module packaging
@@ -42,6 +53,7 @@ jobs:
               expected = {base + 'java_init.list', base + 'scope.list', base + 'module.prop'}
               assert expected.issubset(members), 'Modern module metadata missing: ' + repr(expected - members)
               assert 'assets/xposed_init' not in members, 'Legacy entry file must be absent'
+              assert 'assets/dns-root.sh' in members, 'Root DNS control script missing from APK'
               assert z.read(base + 'java_init.list').decode().strip() == 'dev.yz.dnsobserver.ModernHookEntry'
               assert z.read(base + 'scope.list').decode().strip() == 'system'
               props = z.read(base + 'module.prop').decode()

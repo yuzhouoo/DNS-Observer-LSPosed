@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- No INTERNET / VPN / QUERY_ALL_PACKAGES permission is requested. -->
+    <!-- DNS forwarding uses raw UDP/TCP sockets. No VPN or QUERY_ALL_PACKAGES. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <application
         android:allowBackup="false"
         android:label="DNS Observer"
@@ -13,6 +16,13 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity android:name=".DnsControlActivity" android:exported="false" />
+        <service android:name=".DnsForwardService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Explicit user-enabled local DNS UDP TCP forwarding on rooted device" />
+        </service>
         <provider android:name=".SecureProvider"
             android:authorities="dev.yz.dnsobserver.events"
             android:exported="true" />

@@ -1,4 +1,4 @@
-# DNS Observer — LSPosed module v0.2.0 (API 102)
+# DNS Observer — LSPosed module v0.3.0 (API 102)
 
 **专为系统 DNS 解析记录设计的独立 LSPosed 模块，Java + Android 原生视图，不需要 KernelSU 模块、VPN、网络权限。**
 
@@ -81,3 +81,38 @@ AOSP DnsResolver / netd  -> NetdEventListenerService.onDnsEvent (system_server)
 ## 当前验证状态
 
 完成源代码静态检查、XML 解析检查以及独立 `TextPolicy` JVM 回归测试。当前执行环境没有 Android SDK / Gradle，**GitHub Actions 已完成 APK 编译，但尚未完成 ColorOS 16 实机运行验证**。发布的是开发验证版源码，不应视作已实测稳定版本。
+
+## v0.3.0：可选 Root DNS 接管（实验性）
+
+**旧版 LSPosed API 102 DNS 监控代码保持不变**。新增独立的 `DnsControlActivity`、`DnsForwardService`、`DnsBootstrap`、`DnsPacket`、`DnsRootRules` 和 `assets/dns-root.sh`。
+
+1. 首次启动不会修改任何网络规则；仅在「DNS 接管设置」内点击「启动 DNS 接管」后执行。
+2. 填写上游纯域名（例如 `dns.example.net`，不要包含协议/端口），端口默认 31017；可选备用 Bootstrap **纯 IP** 服务器，留空则只使用系统 DNS。
+3. 点击「检测上游 UDP/TCP DNS」；会分别进行真实 DNS 报文探测，不执行 Root 命令。
+4. 启动时先解析上游域名，再进行 UDP DNS 探测，然后绑定 `127.0.0.1:15353`（按需还绑定 `::1:15353`），最后安装 Root NAT 规则。失败时自动调用专属规则清理。
+5. NAT 仅处理本机 `OUTPUT` 中的普通 UDP/TCP 53，使用专属 `DOBSR53` 链，并从转发中排除 App 自身 UID、IPv4/IPv6 回环地址；不修改系统 DNS 属性、不覆盖其它规则、不改系统分区。
+6. 上游域名按约 5 分钟间隔更新一次，使用系统 DNS（App UID 不被重定向），系统 DNS 解析失败可经指定纯 IP Bootstrap DNS 查询 A/AAAA。由于 Android 系统解析器不暴露 TTL，这里不是精确按 TTL 更新。
+7. 持续上游错误后尝试恢复原系统 DNS。另有 Root shell watchdog 检查主 App 进程及工作规则，尝试在进程死亡后清理专属链。**无法保证所有设备都能自动回滚**。
+8. 页面可手动关闭、紧急清理规则。不开机自启，无常驻 KernelSU 模块；关掉接管不影响原有 DNS 监控。
+
+### 真实设备上的限制与风险
+
+- 这是 **普通 DNS UDP/TCP 53** 透明转发，不是 DoH/DoT/DoQ 强制破解。浏览器内置 DoH、Android 私人 DNS、VPN/TUN 内部解析、直接连 IP 的场景可能绕过。
+- IPv6 DNS 重定向需要设备具有可用的 ip6tables NAT/REDIRECT。**默认不勾选 IPv6**，建议先验证 IPv4 接管，再打开 IPv6。
+- App 进程可能被系统终止，Root 和防火墙行为因 ROM/KernelSU/Mihomo 而异。请先确认有 Root 恢复途径，不要第一次使用就启用开机接管。对端是公网时普通 DNS 不加密。
+- 备用 Bootstrap 纯 IP DNS 仅用于上游域名引导，不负责所有普通 DNS；上游转发可能需要 TCP，前台服务通知在系统限制下可能受影响。
+- 当前仅编译检查和 JVM 核心测试，不代表已经在 ColorOS 16 上验证 Root NAT 实际生效。启用后应对照远端服务器日志和实际客户端解析检查。
+- 此版本增加 `INTERNET` 和 Android `specialUse` 前台服务权限，均用于本地代理/原始 DNS 连接，不上传监控数据库。
+- GitHub Actions 默认 debug 签名可能与先前安装的 APK 不一致；覆盖更新失败时先导出 DNS Observer CSV，再卸载旧版本，会清空本地记录。
+
+### Root 恢复（发生网络异常时）
+
+可在 App「DNS 接管设置」点击「紧急清理 Root 重定向规则」。如 App 无法打开，可在具备 Root 权限的 shell 执行下面的命令（只操作模块链）：
+
+```sh
+su -c 'iptables -t nat -D OUTPUT -p udp --dport 53 -j DOBSR53'
+su -c 'iptables -t nat -D OUTPUT -p tcp --dport 53 -j DOBSR53'
+su -c 'iptables -t nat -F DOBSR53; iptables -t nat -X DOBSR53'
+# 如果曾开启 IPv6，请同样以 ip6tables 替换 iptables 执行。
+```
+

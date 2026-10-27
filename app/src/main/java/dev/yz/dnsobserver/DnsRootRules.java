@@ -1,0 +1,94 @@
+package dev.yz.dnsobserver;
+
+import android.content.Context;
+import android.os.Process;
+
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.concurrent.TimeUnit;
+
+/** The ONLY code responsible for Root firewall changes. No persistent boot scripts. */
+public final class DnsRootRules {
+    public static final int PORT = 15353;
+    private static final String SCRIPT = "dns-root-v030.sh";
+
+    private DnsRootRules() { }
+
+    private static File script(Context context) throws Exception {
+        File file = new File(context.getFilesDir(), SCRIPT);
+        if (file.isFile() && file.length() > 300) return file;
+        try (InputStream in = context.getAssets().open("dns-root.sh");
+             FileOutputStream out = new FileOutputStream(file, false)) {
+            byte[] buffer = new byte[4096];
+            int n;
+            while ((n = in.read(buffer)) != -1) out.write(buffer, 0, n);
+            out.getFD().sync();
+        }
+        if (!file.setReadable(true, true) || !file.setWritable(true, true)) {
+            throw new IllegalStateException("无法保护 Root 脚本文件权限");
+        }
+        return file;
+    }
+
+    private static String path(File file) {
+        String value = file.getAbsolutePath();
+        if (!value.matches("/[a-zA-Z0-9_./-]+")) throw new IllegalArgumentException("unsafe script path");
+        return value;
+    }
+
+    private static String invoke(Context ctx, String mode, boolean ipv6, String token, int timeout) throws Exception {
+        String file = path(script(ctx));
+        int uid = Process.myUid();
+        int pid = Process.myPid();
+        if (!mode.matches("install|remove|watch|status") || !token.matches("[a-zA-Z0-9_-]{1,64}")) {
+            throw new IllegalArgumentException("invalid command arguments");
+        }
+        String cmd = "/system/bin/sh " + file + " " + mode + " " + uid + " "
+                + PORT + " " + (ipv6 ? "1" : "0") + " " + pid + " " + token;
+        if ("watch".equals(mode)) cmd += " </dev/null >/dev/null 2>&1 &";
+        java.lang.Process proc = new ProcessBuilder("su", "-c", cmd).redirectErrorStream(true).start();
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Thread drain = new Thread(() -> {
+            try (InputStream in = proc.getInputStream()) {
+                byte[] b = new byte[1024];
+                int n;
+                while ((n = in.read(b)) != -1) {
+                    synchronized (output) { if (output.size() < 8192) output.write(b, 0, n); }
+                }
+            } catch (Exception ignored) { }
+        }, "DnsSuOutput");
+        drain.setDaemon(true);
+        drain.start();
+        if (!proc.waitFor(timeout, TimeUnit.SECONDS)) {
+            proc.destroyForcibly();
+            throw new IllegalStateException("Root 命令超时: " + mode);
+        }
+        if (proc.exitValue() != 0) {
+            throw new IllegalStateException("Root " + mode + " 失败 (" + proc.exitValue() + "): "
+                    + new String(output.toByteArray(), StandardCharsets.UTF_8).trim());
+        }
+        return new String(output.toByteArray(), StandardCharsets.UTF_8).trim();
+    }
+
+    public static void install(Context ctx, boolean ipv6, String token) throws Exception {
+        try {
+            invoke(ctx, "install", ipv6, token, 15);
+            invoke(ctx, "watch", ipv6, token, 8);
+        } catch (Exception e) {
+            try { remove(ctx); } catch (Exception ignored) { }
+            throw e;
+        }
+    }
+
+    public static void remove(Context ctx) throws Exception {
+        invoke(ctx, "remove", false, "cleanup", 12);
+    }
+
+    public static boolean active(Context ctx) {
+        try { invoke(ctx, "status", false, "status", 5); return true; }
+        catch (Exception ignored) { return false; }
+    }
+}
