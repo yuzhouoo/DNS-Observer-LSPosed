@@ -7,12 +7,6 @@
         android:description="@string/module_description"
         android:theme="@android:style/Theme.Material.NoActionBar"
         android:usesCleartextTraffic="false">
-        <meta-data android:name="xposedmodule" android:value="true" />
-        <meta-data android:name="xposeddescription" android:value="监控 Android 系统 DNS 查询与解析结果" />
-        <meta-data android:name="xposedminversion" android:value="82" />
-        <!-- LSPosed legacy recommended scope: system_server (System Framework).
-             Use 'system' rather than 'android' on current LSPosed managers. -->
-        <meta-data android:name="xposedscope" android:value="system" />
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

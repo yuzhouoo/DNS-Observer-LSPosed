@@ -6,8 +6,8 @@ android {
         applicationId 'dev.yz.dnsobserver'
         minSdk 29
         targetSdk 35
-        versionCode 3
-        versionName '0.1.2'
+        versionCode 4
+        versionName '0.2.0'
     }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
@@ -15,7 +15,6 @@ android {
     }
 }
 dependencies {
-    // Compile-time only: stubs are NOT packaged into APK.
-    // Runtime classes are provided by LSPosed's legacy compatibility layer.
-    compileOnly files('libs/xposed-api-compile-stubs.jar')
+    // CompileOnly: libxposed API classes supplied by LSPosed 2.2.1 at runtime.
+    compileOnly 'io.github.libxposed:api:102.0.0'
 }

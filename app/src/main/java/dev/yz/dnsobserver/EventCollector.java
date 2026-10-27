@@ -8,6 +8,7 @@ import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.Process;
 import android.os.SystemClock;
+import android.util.Log;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -41,7 +42,7 @@ public final class EventCollector {
         worker = new Handler(t.getLooper());
         // Avoid trying to launch a third-party provider in early system boot.
         worker.postDelayed(flush, 12_000L);
-        de.robv.android.xposed.XposedBridge.log("DNSObserver: collector started");
+        Log.i("DNSObserver", "DNSObserver: collector started");
     }
 
     public void accept(int netId, int eventType, int returnCode, int latency,
@@ -118,7 +119,7 @@ public final class EventCollector {
                         + TextPolicy.clamp(t.getMessage(), 100);
                 long now = SystemClock.elapsedRealtime();
                 if (!error.equals(lastError) || now - lastErrorLogMs > 60_000L) {
-                    de.robv.android.xposed.XposedBridge.log("DNSObserver: IPC retry: " + error);
+                    Log.w("DNSObserver", "DNSObserver: IPC retry: " + error);
                     lastErrorLogMs = now;
                 }
                 lastError = error;

@@ -1,6 +1,9 @@
-# DNS Observer — LSPosed module v0.1.2
+# DNS Observer — LSPosed module v0.2.0 (API 102)
 
 **专为系统 DNS 解析记录设计的独立 LSPosed 模块，Java + Android 原生视图，不需要 KernelSU 模块、VPN、网络权限。**
+
+**v0.2.0 重要：此版已迁移到 LSPosed 2.2.1 的 Modern libxposed API 102。** 入口为 `META-INF/xposed/java_init.list`，推荐作用域 `META-INF/xposed/scope.list` 仅为 `system`。不再使用 `assets/xposed_init`、旧版 XposedBridge API 或旧 Manifest 模块元数据。
+
 
 ## 覆盖与边界
 
@@ -29,14 +32,14 @@ gradle :app:assembleDebug
 
 生成 `app/build/outputs/apk/debug/app-debug.apk`。
 
-如本机没有 Android SDK，可以把这个工程解压上传到 **自己私有的 GitHub 仓库**，进入 `Actions` → `Android Debug APK` → `Run workflow`，下载构建出的 `DNSObserver-debug-apk` 工件。请注意私有仓库避免误公开自己的调试信息；当前工程不包含任何真实 DNS 记录。
+如本机没有 Android SDK，可以把这个工程上传到 GitHub 仓库，进入 `Actions` → `Android Debug APK` → `Run workflow`，下载构建出的 `DNSObserver-debug-apk` 工件。请注意私有仓库避免误公开自己的调试信息；当前工程不包含任何真实 DNS 记录。
 
-`app/libs/xposed-api-compile-stubs.jar` 只是为 Android 工程编译提供的 **compileOnly** 类型签名桩，**不会被打包进 APK**。运行时依赖 LSPosed 提供的 legacy Xposed API。对应桩源码在 `stubsrc/`。
+编译依赖采用 `compileOnly 'io.github.libxposed:api:102.0.0'`（Maven Central），运行时由 LSPosed 提供 API 类。
 
 ## 安装
 
 1. 安装构建完成的 APK。
-2. LSPosed 中启用 `DNS Observer`：模块已通过 `AndroidManifest.xml` 的 **`xposedscope=system`** 提供推荐作用域。使用「推荐作用域」，确认只勾选 **「系统框架 / System Framework / system」**，不要勾选全部 App，也不要额外勾选 `android`（系统对话框/部分 UI 进程）。若你已给旧版模块设置过作用域，LSPosed 可能保留之前的选择；请手动恢复/应用推荐作用域。
+2. LSPosed 2.2.1 中启用 `DNS Observer`，仅选择「系统框架 / System Framework / system」；新版从 `META-INF/xposed/scope.list` 推荐作用域，不再读取旧版 `xposedscope` 元数据。
 3. **完整重启手机**（这是系统进程 Hook，重启 App 不足以生效）。
 4. 打开 DNS Observer，页面显示「系统 DNS Hook 已连接」后，用浏览器访问从未访问过的域名，查看新记录。
 5. 如果始终没有心跳，先检查 LSPosed 模块日志中 `DNSObserver:` 标签；可能是 ColorOS 修改了 `SystemServer` 或 `NetdEventListenerService` 类位置 / 方法签名。**不要反复重启尝试不明 Hook 修补。**
@@ -47,7 +50,7 @@ gradle :app:assembleDebug
 
 ### 诊断
 
-- LSPosed 日志应包含：`DNSObserver: system DNS hook installed: 1`。
+- 在框架日志或 logcat 中搜索 `DNSObserver:`，首先应看到 `module loaded` 和 `system server starting`；然后检查 `lifecycle hooks installed` 与 `DNS event hooks installed`。
 - 页面显示心跳表示已加载系统 Hook 且后台进程与数据库 IPC 可达，**不表示所有 DNS 方式都已被监控**。
 - 页面心跳正常但无记录：可能尚未发生标准系统解析，或当前设备 DNS 模块没有通知该回调。先用多个常规应用进行验证。
 - 保存数据只有本机 App 私有目录可见。导出的 CSV 位于用户在 Android 文件选择器选定的位置。
@@ -64,14 +67,16 @@ AOSP DnsResolver / netd  -> NetdEventListenerService.onDnsEvent (system_server)
 
 不会修改原始 DNS 返回值，不会抓包、不启动本地 DNS 服务器，也不会和 Mihomo/SmartDNS/AdGuardHome 争夺 53 端口。
 
-## v0.1.2 心跳诊断
+## v0.2.0 / Modern API 102 诊断
 
-- 系统生命周期 Hook 和 DNS Hook 分开安装，不再因 DNS 方法不存在而跳过心跳初始化。
-- 系统生命周期采用 Android 16 `createSystemContext`，并用 `startOtherServices` 作为单独的容错入口；后台工作线程延后 12 秒开始访问 App Provider，降低开机阶段干扰。
-- App 显示本地 Provider 健康状态。**本地 Provider 正常不代表系统 Hook 已加载**。
-- 在 LSPosed 模块日志中查找 `DNSObserver:`，包括 `entry reached`、`lifecycle ... hooks=`、`collector started`、`system DNS hook installed` 和 `IPC retry:`。
-- 若只有 `DNS hook unavailable`，可能是 ColorOS 类位置差异；若没有 `entry reached`，应检查模块启用和系统框架作用域。
-- 系统 Hook 运行在 `system_server`，有潜在开机异常风险。请先确认恢复方式，避免多次盲目重启。
+- 若 LSPosed 模块日志仍无 `DNSObserver:`，优先查看框架日志，并通过 `adb logcat -d -s DNSObserver:I` 判断是否有应用注入日志；两者都没有时应检查模块启用、作用域和系统进程注入状态。
+- `module loaded` 表示 libxposed modern 入口加载成功。
+- `system server starting` 表示进入系统服务启动回调。
+- `lifecycle hooks installed` 表示已安装系统 Context 获取点；`collector started` 表示后台心跳线程启动。
+- `DNS event hooks installed` 表示 DNS 事件 Hook 安装成功，**并不保证所有 DNS 途径都被捕获**。
+- `IPC retry` 表示从 system_server 到 App Provider 的心跳/数据库通道失败。
+- **系统框架 Hook 有开机风险。** 请确保可在 KernelSU/LSPosed 中禁用模块后再安装测试；不要盲目反复重启。
+- **GitHub Actions debug APK 的签名证书可能随构建环境改变**，覆盖安装如提示签名冲突，应先导出旧日志再卸载旧版本安装新版；会清除原 App 的本地数据。
 
 ## 当前验证状态
 
