@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- No INTERNET / VPN / QUERY_ALL_PACKAGES permission is requested. -->
+    <application
+        android:allowBackup="false"
+        android:label="DNS Observer"
+        android:description="@string/module_description"
+        android:theme="@android:style/Theme.Material.NoActionBar"
+        android:usesCleartextTraffic="false">
+        <meta-data android:name="xposedmodule" android:value="true" />
+        <meta-data android:name="xposeddescription" android:value="监控 Android 系统 DNS 查询与解析结果" />
+        <meta-data android:name="xposedminversion" android:value="82" />
+        <activity android:name=".MainActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <provider android:name=".SecureProvider"
+            android:authorities="dev.yz.dnsobserver.events"
+            android:exported="true" />
+    </application>
+</manifest>

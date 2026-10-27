@@ -1,0 +1,21 @@
+plugins { id 'com.android.application' }
+android {
+    namespace 'dev.yz.dnsobserver'
+    compileSdk 35
+    defaultConfig {
+        applicationId 'dev.yz.dnsobserver'
+        minSdk 29
+        targetSdk 35
+        versionCode 1
+        versionName '0.1.0'
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+dependencies {
+    // Compile-time only: stubs are NOT packaged into APK.
+    // Runtime classes are provided by LSPosed's legacy compatibility layer.
+    compileOnly files('libs/xposed-api-compile-stubs.jar')
+}
