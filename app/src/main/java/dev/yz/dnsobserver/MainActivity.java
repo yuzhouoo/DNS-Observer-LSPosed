@@ -80,7 +80,7 @@ public final class MainActivity extends Activity {
 
         TextView title = text("DNS Observer", 27, TEXT, true);
         main.addView(title);
-        TextView subtitle = text("全局系统解析事件 · LSPosed", 12, MUTED, false);
+        TextView subtitle = text("系统 DNS 观察 · LSPosed API 102 · v0.4.0", 12, MUTED, false);
         subtitle.setPadding(0, dp(2), 0, dp(12));
         main.addView(subtitle);
 
@@ -95,7 +95,7 @@ public final class MainActivity extends Activity {
         main.addView(overview);
 
         Button dnsControl = new Button(this);
-        dnsControl.setText("DNS 接管设置（需要 Root）");
+        dnsControl.setText("DNS 接管 · 主备 DNS · IP 历史");
         dnsControl.setTextSize(13);
         dnsControl.setAllCaps(false);
         dnsControl.setOnClickListener(v -> startActivity(
@@ -131,7 +131,7 @@ public final class MainActivity extends Activity {
         search.setTextSize(13);
         search.setTextColor(TEXT);
         search.setHintTextColor(MUTED);
-        search.setHint("搜索域名 / 包名 / IP");
+        search.setHint("域名 / 应用 / 包名 / IP / DNS 服务器");
         search.setPadding(dp(12), dp(5), dp(7), dp(5));
         search.setBackground(bg(PANEL, dp(11)));
         filters.addView(search, new LinearLayout.LayoutParams(0, dp(42), 1));
@@ -144,7 +144,7 @@ public final class MainActivity extends Activity {
         filters.addView(statusSpinner, new LinearLayout.LayoutParams(dp(78), dp(42)));
         main.addView(filters);
 
-        TextView caption = text("最近记录 · 实时刷新 · 长按复制域名 / 结果", 12, MUTED, false);
+        TextView caption = text("解析记录 · 3 秒刷新 · 状态筛选 · 点击展开 IP", 12, MUTED, false);
         caption.setPadding(0, dp(11), 0, dp(8));
         main.addView(caption);
         ScrollView scroll = new ScrollView(this);
@@ -293,23 +293,40 @@ public final class MainActivity extends Activity {
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
             lp.bottomMargin = dp(7);
             card.setLayoutParams(lp);
-            TextView host = text(e.host, 15, TEXT, true);
+            LinearLayout heading=new LinearLayout(this);
+            heading.setOrientation(LinearLayout.HORIZONTAL);
+            heading.setGravity(Gravity.CENTER_VERTICAL);
+            TextView host=text(e.host,15,TEXT,true);
             host.setMaxLines(2);
-            card.addView(host);
-            TextView ip = text(e.ips == null || e.ips.isEmpty() ? "未返回 IP" : e.ips,
-                    13, e.rc == 0 ? AQUA : RED, false);
-            ip.setPadding(0, dp(6), 0, dp(6));
+            heading.addView(host,new LinearLayout.LayoutParams(0,-2,1));
+            TextView result=text(e.rc==0?"成功":"失败",12,e.rc==0?GREEN:RED,true);
+            result.setPadding(dp(8),0,0,0);
+            heading.addView(result);
+            card.addView(heading);
+            TextView app=text((e.appName==null||e.appName.isEmpty()?"未知应用":e.appName)
+                    +" · "+e.packages,12,MUTED,false);
+            app.setPadding(0,dp(6),0,dp(3));card.addView(app);
+            String addresses=e.ips==null?"":e.ips;
+            String[] addressList=addresses.isEmpty()?new String[0]:addresses.split(", ");
+            boolean many=addressList.length>2;
+            String preview=many?addressList[0]+", "+addressList[1]
+                    +"  ·  另有 "+(addressList.length-2)+" 个，点击展开":addresses;
+            TextView ip=text(addresses.isEmpty()?"未返回 IP":preview,13,AQUA,false);
+            ip.setPadding(0,dp(5),0,dp(5));
             card.addView(ip);
-            TextView pkg = text(e.packages + "  ·  UID " + e.uid, 11, MUTED, false);
-            pkg.setMaxLines(2);
-            card.addView(pkg);
+            if(many) ip.setOnClickListener(new View.OnClickListener(){boolean expanded;
+                @Override public void onClick(View v){expanded=!expanded;ip.setText(expanded?addresses:preview);}
+            });
+            TextView dns=text("DNS 类型："+safe(e.dnsType)+"\nDNS 服务器："+safe(e.dnsServer),
+                    12,MUTED,false);
+            dns.setPadding(0,dp(5),0,dp(4));card.addView(dns);
+            TextView source=text(safe(e.dnsSource),11,MUTED,false);card.addView(source);
             String stamp;
             synchronized (timeFormat) { stamp = timeFormat.format(new Date(e.ts)); }
-            String status = e.rc == 0 ? "成功" : "失败 (" + e.rc + ")";
-            TextView meta = text(stamp + "  ·  " + status + "  ·  " + e.latency + "ms" +
-                    "  ·  NetID " + e.net + "  ·  事件 " + e.type, 11, MUTED, false);
-            meta.setPadding(0, dp(5), 0, 0);
-            card.addView(meta);
+            String metaText=stamp+"  ·  " +(e.rc==0?"成功":"错误 "+e.rc)+" · "
+                    +e.latency+" ms · UID "+e.uid+" · NetID "+e.net;
+            TextView meta=text(metaText,11,MUTED,false);
+            meta.setPadding(0,dp(7),0,0);card.addView(meta);
             card.setOnLongClickListener(v -> {
                 String value = e.host + (e.ips == null || e.ips.isEmpty() ? "" : "\n" + e.ips);
                 ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
@@ -321,6 +338,7 @@ public final class MainActivity extends Activity {
         }
     }
 
+    private static String safe(String s) {return s==null||s.isEmpty()?"未知":s;}
     private void confirmClear() {
         new AlertDialog.Builder(this)
                 .setTitle("清空全部解析记录？")

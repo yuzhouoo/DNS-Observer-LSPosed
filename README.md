@@ -1,4 +1,4 @@
-# DNS Observer — LSPosed module v0.3.0 (API 102)
+# DNS Observer — LSPosed module v0.4.0 (API 102)
 
 **专为系统 DNS 解析记录设计的独立 LSPosed 模块，Java + Android 原生视图，不需要 KernelSU 模块、VPN、网络权限。**
 
@@ -116,3 +116,13 @@ su -c 'iptables -t nat -F DOBSR53; iptables -t nat -X DOBSR53'
 # 如果曾开启 IPv6，请同样以 ip6tables 替换 iptables 执行。
 ```
 
+
+## v0.4.0 功能和准确性说明
+
+- 原有全局 LSPosed 监听保持不变；日志可筛选成功/失败，折叠多 IP，显示应用名/包名/解析结果/解析类型和 DNS 服务器地址。
+- **协议证据限制**：系统的 `NetdEventListenerService.onDnsEvent` 没有 DoH/DoT 流量协议字段；记录中显示的是系统 LinkProperties 的默认网络私人 DNS / DNS 列表快照，或接管器配置的上游，明确标注为配置快照，不是按次真实网络抓包。应用私有 DoH 可能根本不产生系统事件，绝不误标为 DoH。
+- 主/备用上游独立填写域名和端口。Bootstrap 纯 IP DNS 用于域名解析，是另外一种设置。上游通信暂仅 UDP/TCP（不是 DoH/DoT）。主服务器失败时尝试备用，并记录当前所用的角色/IP；在主服务器恢复后恢复主服务器优先。
+- 接管开启后每 60 秒探测主备延时，每 5 分钟在提供 Bootstrap 纯 IP 时通过独立 Socket 重新解析并更新主备 IP；不提供纯 IP Bootstrap 则只检查缓存的 IP，不使用系统 DNS 以免透明接管循环。
+- 在未接管时使用 Android JobScheduler 每约 15 分钟执行健康检查及 DNS 域名刷新（Android 的 Doze 可能延迟）。进入 DNS 接管配置页后启动此系统调度；打开配置页还能立即手动检测。历史保存最近 30 天/1000 项，包括失败原因/IP/延时。
+- 数据库从 schema 1 自动迁移到 2，保留旧日志，旧日志新字段显示“未知”。
+- **Root 接管有风险，首次应先检测并手动开启，不启用开机自动接管。** 如果失败应使用关闭/紧急恢复，并验证手机网络恢复。

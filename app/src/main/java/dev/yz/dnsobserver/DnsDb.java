@@ -20,7 +20,7 @@ import java.util.Locale;
 
 public final class DnsDb extends SQLiteOpenHelper {
     private static final String NAME = "dns_log.db";
-    private static final int VERSION = 1;
+    private static final int VERSION = 2;
     public static final int MAX_RECORDS = 20000;
     public static final int PAGE_SIZE = 120;
     private static final long KEEP_MS = 14L * 86400_000L;
@@ -33,12 +33,30 @@ public final class DnsDb extends SQLiteOpenHelper {
                 "ts INTEGER NOT NULL, uid INTEGER NOT NULL, packages TEXT NOT NULL," +
                 "host TEXT NOT NULL, ips TEXT NOT NULL, total INTEGER NOT NULL," +
                 "net INTEGER NOT NULL, eventType INTEGER NOT NULL, rc INTEGER NOT NULL," +
-                "latency INTEGER NOT NULL)");
+                "latency INTEGER NOT NULL," +
+                "appName TEXT NOT NULL DEFAULT '',dnsType TEXT NOT NULL DEFAULT '未知'," +
+                "dnsServer TEXT NOT NULL DEFAULT '未知',dnsSource TEXT NOT NULL DEFAULT '未观测')");
         db.execSQL("CREATE INDEX idx_dns_ts ON records(ts DESC)");
         db.execSQL("CREATE INDEX idx_dns_host ON records(host)");
         db.execSQL("CREATE INDEX idx_dns_uid ON records(uid)");
+        createUpstreamHistory(db);
     }
-    @Override public void onUpgrade(SQLiteDatabase db, int from, int to) { }
+    private static void createUpstreamHistory(SQLiteDatabase db) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS upstream_history (" +
+                "id INTEGER PRIMARY KEY AUTOINCREMENT,ts INTEGER NOT NULL," +
+                "role TEXT NOT NULL,host TEXT NOT NULL,ips TEXT NOT NULL," +
+                "latency INTEGER NOT NULL,success INTEGER NOT NULL,error TEXT NOT NULL)");
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_upstream_ts ON upstream_history(ts DESC)");
+    }
+    @Override public void onUpgrade(SQLiteDatabase db, int from, int to) {
+        if (from < 2) {
+            db.execSQL("ALTER TABLE records ADD COLUMN appName TEXT NOT NULL DEFAULT ''");
+            db.execSQL("ALTER TABLE records ADD COLUMN dnsType TEXT NOT NULL DEFAULT '未知'");
+            db.execSQL("ALTER TABLE records ADD COLUMN dnsServer TEXT NOT NULL DEFAULT '未知'");
+            db.execSQL("ALTER TABLE records ADD COLUMN dnsSource TEXT NOT NULL DEFAULT '未观测'");
+            createUpstreamHistory(db);
+        }
+    }
 
     public synchronized void insertBatch(Context context, ArrayList<Bundle> events) {
         if (events == null || events.isEmpty()) return;
@@ -58,6 +76,10 @@ public final class DnsDb extends SQLiteOpenHelper {
                 cv.put("ts", item.getLong("ts", System.currentTimeMillis()));
                 cv.put("uid", uid);
                 cv.put("packages", pkg);
+                cv.put("appName", TextPolicy.clamp(item.getString("appName", ""), 160));
+                cv.put("dnsType", TextPolicy.clamp(item.getString("dnsType", "未知"), 70));
+                cv.put("dnsServer", TextPolicy.clamp(item.getString("dnsServer", "未知"), 350));
+                cv.put("dnsSource", TextPolicy.clamp(item.getString("dnsSource", "未观测"), 80));
                 cv.put("host", host);
                 cv.put("ips", addr);
                 cv.put("total", item.getInt("total", 0));
@@ -93,7 +115,7 @@ public final class DnsDb extends SQLiteOpenHelper {
     public synchronized List<Entry> latest(String keyword, int filter) {
         List<Entry> result = new ArrayList<>();
         String sql = "SELECT ts,uid,packages,host,ips,total,net,eventType,rc,latency " +
-                "FROM records WHERE 1=1";
+                " ,appName,dnsType,dnsServer,dnsSource FROM records WHERE 1=1";
         ArrayList<String> args = new ArrayList<>();
         if (filter == 1) sql += " AND rc = 0";
         if (filter == 2) sql += " AND rc != 0";
@@ -102,8 +124,9 @@ public final class DnsDb extends SQLiteOpenHelper {
             String needle = keyword.trim().replace("\\", "\\\\")
                     .replace("%", "\\%").replace("_", "\\_");
             sql += " AND (host LIKE ? ESCAPE '\\' OR packages LIKE ? ESCAPE '\\' " +
-                    "OR ips LIKE ? ESCAPE '\\')";
-            for (int i = 0; i < 3; i++) args.add("%" + needle + "%");
+                    "OR ips LIKE ? ESCAPE '\\' OR appName LIKE ? ESCAPE '\\' " +
+                    "OR dnsServer LIKE ? ESCAPE '\\')";
+            for (int i = 0; i < 5; i++) args.add("%" + needle + "%");
         }
         sql += " ORDER BY id DESC LIMIT " + PAGE_SIZE;
         try (Cursor c = getReadableDatabase().rawQuery(sql, args.toArray(new String[0]))) {
@@ -113,6 +136,8 @@ public final class DnsDb extends SQLiteOpenHelper {
                 e.host = c.getString(3); e.ips = c.getString(4); e.total = c.getInt(5);
                 e.net = c.getInt(6); e.type = c.getInt(7); e.rc = c.getInt(8);
                 e.latency = c.getInt(9);
+                e.appName=c.getString(10); e.dnsType=c.getString(11);
+                e.dnsServer=c.getString(12); e.dnsSource=c.getString(13);
                 result.add(e);
             }
         }
@@ -127,17 +152,17 @@ public final class DnsDb extends SQLiteOpenHelper {
         // Output data is local to a user-selected Storage Access Framework URI.
         BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(out, StandardCharsets.UTF_8));
         writer.write('\ufeff');
-        writer.write("time,uid,packages,hostname,ipAddresses,totalIpCount,netId,eventType,returnCode,latencyMs\n");
+        writer.write("time,uid,packages,appName,hostname,ipAddresses,totalIpCount,netId,eventType,returnCode,latencyMs,dnsType,dnsServer,dnsSource\n");
         SimpleDateFormat date = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault());
         try (Cursor c = getReadableDatabase().rawQuery(
-                "SELECT ts,uid,packages,host,ips,total,net,eventType,rc,latency FROM records ORDER BY id DESC", null)) {
+                "SELECT ts,uid,packages,host,ips,total,net,eventType,rc,latency,appName,dnsType,dnsServer,dnsSource FROM records ORDER BY id DESC", null)) {
             while (c.moveToNext()) {
                 String[] values = {
                         date.format(new Date(c.getLong(0))), String.valueOf(c.getInt(1)),
-                        c.getString(2), c.getString(3), c.getString(4),
+                        c.getString(2), c.getString(10), c.getString(3), c.getString(4),
                         String.valueOf(c.getInt(5)), String.valueOf(c.getInt(6)),
                         String.valueOf(c.getInt(7)), String.valueOf(c.getInt(8)),
-                        String.valueOf(c.getInt(9))
+                        String.valueOf(c.getInt(9)),c.getString(11),c.getString(12),c.getString(13)
                 };
                 for (int i = 0; i < values.length; i++) {
                     if (i != 0) writer.write(',');
@@ -149,10 +174,39 @@ public final class DnsDb extends SQLiteOpenHelper {
         writer.flush();
     }
 
+
+    /** Historical observations: every check is written, IP changes remain visible. */
+    public synchronized void addUpstreamCheck(String role,String host,String ips,long latency,boolean ok,String error) {
+        SQLiteDatabase db=getWritableDatabase();
+        ContentValues v=new ContentValues();
+        v.put("ts",System.currentTimeMillis());v.put("role",TextPolicy.clamp(role,16));
+        v.put("host",TextPolicy.clamp(host,253));v.put("ips",TextPolicy.clamp(ips,700));
+        v.put("latency",Math.max(0,Math.min(60000,latency)));v.put("success",ok?1:0);
+        v.put("error",TextPolicy.clamp(error,160));
+        db.insert("upstream_history",null,v);
+        // Retain 30 days or 1000 most recent health samples, whichever is smaller.
+        db.execSQL("DELETE FROM upstream_history WHERE ts < ?",new Object[]{System.currentTimeMillis()-30L*86400_000L});
+        db.execSQL("DELETE FROM upstream_history WHERE id NOT IN (SELECT id FROM upstream_history ORDER BY id DESC LIMIT 1000)");
+    }
+    public synchronized List<UpstreamEntry> latestUpstream(int limit) {
+        List<UpstreamEntry> out=new ArrayList<>();
+        try(Cursor c=getReadableDatabase().rawQuery(
+            "SELECT ts,role,host,ips,latency,success,error FROM upstream_history ORDER BY id DESC LIMIT "+Math.max(1,Math.min(limit,100)),null)) {
+            while(c.moveToNext()) {
+                UpstreamEntry e=new UpstreamEntry();e.ts=c.getLong(0);e.role=c.getString(1);
+                e.host=c.getString(2);e.ips=c.getString(3);e.latency=c.getLong(4);
+                e.success=c.getInt(5)!=0;e.error=c.getString(6);out.add(e);
+            }
+        }
+        return out;
+    }
+    public static final class UpstreamEntry {
+        public long ts,latency; public boolean success; public String role,host,ips,error;
+    }
     public static final class Stats { public int total, domains, failures; }
     public static final class Entry {
         public long ts;
         public int uid, total, net, type, rc, latency;
-        public String packages, host, ips;
+        public String packages, appName, host, ips, dnsType, dnsServer, dnsSource;
     }
 }

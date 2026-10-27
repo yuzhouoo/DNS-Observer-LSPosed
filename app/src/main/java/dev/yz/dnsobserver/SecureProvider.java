@@ -44,7 +44,20 @@ public final class SecureProvider extends ContentProvider {
                 .apply();
         if (prefs.getBoolean("enabled", true)) {
             ArrayList<Bundle> records = extras.getParcelableArrayList("events");
-            if (records != null && records.size() <= 50) db.insertBatch(getContext(), records);
+            if (records != null && records.size() <= 50) {
+                SharedPreferences proxy=getContext().getSharedPreferences(DnsForwardService.PREFS,0);
+                if (proxy.getBoolean("running",false)) {
+                    String ip=proxy.getString("current_ip","");
+                    String upstream=proxy.getString("active_host",proxy.getString("host",""));
+                    int port=proxy.getInt("active_port",31017);
+                    for(Bundle event: records) if(event!=null) {
+                        event.putString("dnsType","UDP/TCP 53 接管（配置快照）");
+                        event.putString("dnsServer",upstream+":"+port+(ip.isEmpty()?"":" ["+ip+"]"));
+                        event.putString("dnsSource","接管配置；非逐请求实际目标");
+                    }
+                }
+                db.insertBatch(getContext(), records);
+            }
         }
         result.putBoolean("ok", true);
         result.putBoolean("enabled", prefs.getBoolean("enabled", true));

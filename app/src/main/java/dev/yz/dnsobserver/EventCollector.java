@@ -3,6 +3,10 @@ package dev.yz.dnsobserver;
 import android.content.ContentResolver;
 import android.content.Context;
 import android.net.Uri;
+import android.net.ConnectivityManager;
+import android.net.LinkProperties;
+import android.net.Network;
+import android.content.pm.ApplicationInfo;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.HandlerThread;
@@ -72,6 +76,30 @@ public final class EventCollector {
         }
     }
 
+    private static String[] describeNetwork(Context ctx) {
+        try {
+            ConnectivityManager cm=(ConnectivityManager)ctx.getSystemService(Context.CONNECTIVITY_SERVICE);
+            if(cm==null) return new String[]{"未知","未知","未获取到网络服务"};
+            Network net=cm.getActiveNetwork();
+            LinkProperties p=net==null?null:cm.getLinkProperties(net);
+            if(p==null) return new String[]{"未知","未知","无默认网络配置"};
+            StringBuilder servers=new StringBuilder();
+            for(java.net.InetAddress ip:p.getDnsServers()) {
+                if(servers.length()>0)servers.append(", ");
+                servers.append(ip.getHostAddress());
+            }
+            boolean dot=p.isPrivateDnsActive();
+            String privateName=p.getPrivateDnsServerName();
+            String kind=dot?"私人 DNS 已启用（DoT 配置）":"系统解析器（传输协议未证实）";
+            if(dot && privateName!=null && !privateName.isEmpty()) {
+                if(servers.length()>0)servers.append(" | ");
+                servers.append("Private DNS: ").append(privateName);
+            }
+            return new String[]{kind, servers.length()==0?"未配置":servers.toString(),
+                    "默认网络配置快照，非单次请求抓包"};
+        } catch(Throwable t) {return new String[]{"未知","未知","读取系统 DNS 配置失败"};}
+    }
+
     private final Runnable flush = new Runnable() {
         @Override public void run() {
             long delay = FLUSH_MS;
@@ -89,12 +117,21 @@ public final class EventCollector {
                 if (ctx != null) {
                     // UID -> packages resolved on this background thread with system privileges.
                     // Package visibility restrictions on the UI app cannot hide package names.
+                    String[] netInfo = describeNetwork(ctx);
                     for (Bundle event : batch) {
+                        event.putString("dnsType",netInfo[0]);
+                        event.putString("dnsServer",netInfo[1]);
+                        event.putString("dnsSource",netInfo[2]);
                         int uid = event.getInt("uid", -1);
                         String[] names = ctx.getPackageManager().getPackagesForUid(uid);
                         if (names != null && names.length > 0) {
                             event.putString("packages", TextPolicy.clamp(
                                     android.text.TextUtils.join(", ", names), 400));
+                            try {
+                                ApplicationInfo ai=ctx.getPackageManager().getApplicationInfo(names[0],0);
+                                CharSequence name=ctx.getPackageManager().getApplicationLabel(ai);
+                                if(name!=null) event.putString("appName",TextPolicy.clamp(name.toString(),160));
+                            } catch(Throwable ignored) { }
                         }
                     }
                     Bundle payload = new Bundle();

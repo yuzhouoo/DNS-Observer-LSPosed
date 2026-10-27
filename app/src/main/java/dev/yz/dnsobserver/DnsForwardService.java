@@ -41,7 +41,11 @@ public final class DnsForwardService extends Service {
     private volatile boolean cancellationRequested;
     private final Object firewallLock = new Object();
     private volatile InetAddress[] upstream = new InetAddress[0];
-    private volatile String host, backupIp;
+    private volatile String host, backupIp, secondaryHost;
+    private volatile InetAddress[] secondaryUpstream=new InetAddress[0];
+    private volatile int secondaryPort;
+    private volatile boolean usingSecondary;
+    private volatile String activeIpText="";
     private volatile int port;
     private volatile boolean useIpv6;
     private volatile DatagramSocket udp4, udp6;
@@ -73,6 +77,8 @@ public final class DnsForwardService extends Service {
         host = intent.getStringExtra("host");
         backupIp = intent.getStringExtra("bootstrap");
         port = intent.getIntExtra("port", 31017);
+        secondaryHost = intent.getStringExtra("secondary_host");
+        secondaryPort = intent.getIntExtra("secondary_port",31017);
         useIpv6 = intent.getBooleanExtra("ipv6", false);
         session = UUID.randomUUID().toString().replace("-", "");
         manager = new Thread(this::startNow, "DNS-manager");
@@ -101,6 +107,8 @@ public final class DnsForwardService extends Service {
             if (host == null || host.trim().isEmpty() || host.length() > 253)
                 throw new IllegalArgumentException("请填写上游 DNS 域名");
             if (port < 1 || port > 65535) throw new IllegalArgumentException("上游端口不合法");
+            if (secondaryHost!=null && !secondaryHost.trim().isEmpty()
+                    && (secondaryPort<1 || secondaryPort>65535)) throw new IllegalArgumentException("备用上游端口错误");
             if (backupIp != null && !backupIp.trim().isEmpty()) DnsBootstrap.parseLiteral(backupIp.trim());
             // Clear a stale redirect BEFORE asking Android's system resolver.
             // Even our app's getAllByName may be sent over netd/dnsresolver UID.
@@ -110,7 +118,17 @@ public final class DnsForwardService extends Service {
             if (resolved.length == 0) throw new IOException("无法解析上游 DNS 域名");
             upstream = resolved;
             // Proof of protocol response BEFORE touching firewall rules.
-            if (!probeUpstream()) throw new IOException("上游 DNS UDP 服务器未返回有效响应");
+            boolean primaryAvailable=probeUpstream();
+            if (secondaryHost!=null && !secondaryHost.trim().isEmpty()) {
+                try {
+                    secondaryUpstream=DnsBootstrap.resolve(secondaryHost.trim(),backupIp);
+                } catch(Exception e) {secondaryUpstream=new InetAddress[0];}
+            }
+            boolean secondaryAvailable=!primaryAvailable && probeSecondary();
+            if(!primaryAvailable && !secondaryAvailable)
+                throw new IOException("主备 DNS UDP 均不可达");
+            usingSecondary=secondaryAvailable;
+            saveActiveSnapshot();
             if (cancellationRequested) throw new IOException("用户已取消 DNS 接管启动");
             bindSockets();
             workers = new ThreadPoolExecutor(4, 10, 30, TimeUnit.SECONDS,
@@ -124,7 +142,7 @@ public final class DnsForwardService extends Service {
                 activated = true;
             }
             if (cancellationRequested) { stopNow(); return; }
-            writeState(true, "接管已启动 · " + resolved.length + " 个上游地址");
+            writeState(true, "接管已启动 · " + (usingSecondary?"备用":"主")+" DNS");
             Thread health = new Thread(this::healthLoop, "DNS-health");
             health.setDaemon(true);
             health.start();
@@ -214,25 +232,33 @@ public final class DnsForwardService extends Service {
 
     private byte[] forward(byte[] request, boolean tcp) throws Exception {
         if (!DnsPacket.validQuestion(request)) return DnsPacket.servfail(request);
-        InetAddress[] choices = upstream;
-        if (choices.length == 0) throw new IOException("no upstream addresses");
         Exception last = null;
-        for (int i = 0; i < choices.length; i++) {
-            InetAddress addr = choices[Math.floorMod(cursor.getAndIncrement(), choices.length)];
-            try {
-                byte[] answer = tcp ? forwardTcp(addr, request) : forwardUdp(addr, request);
-                if (!DnsPacket.validReply(request, answer)) throw new IOException("DNS response ID/QR mismatch");
-                failures.set(0);
-                return answer;
-            } catch (Exception e) { last = e; }
+        for(int pass=0;pass<2;pass++) {
+            boolean secondary=(pass==0)?usingSecondary:!usingSecondary;
+            InetAddress[] choices=secondary?secondaryUpstream:upstream;
+            int targetPort=secondary?secondaryPort:port;
+            if(choices==null || choices.length==0)continue;
+            for(int i=0;i<choices.length;i++) {
+                InetAddress addr=choices[Math.floorMod(cursor.getAndIncrement(),choices.length)];
+                try {
+                    byte[] answer=tcp?forwardTcp(addr,request,targetPort):forwardUdp(addr,request,targetPort);
+                    if(!DnsPacket.validReply(request,answer))throw new IOException("DNS response ID/QR mismatch");
+                    failures.set(0);
+                    if(usingSecondary!=secondary){usingSecondary=secondary;saveActiveSnapshot();}
+                    return answer;
+                } catch(Exception e){last=e;}
+            }
         }
         failures.incrementAndGet();
-        throw last == null ? new IOException("上游不可用") : last;
+        throw last==null?new IOException("主备 DNS 不可用"):last;
     }
 
     private byte[] forwardUdp(InetAddress address, byte[] req) throws Exception {
+        return forwardUdp(address,req,port);
+    }
+    private byte[] forwardUdp(InetAddress address, byte[] req,int targetPort) throws Exception {
         try (DatagramSocket socket = new DatagramSocket()) {
-            socket.connect(new InetSocketAddress(address, port));
+            socket.connect(new InetSocketAddress(address, targetPort));
             socket.setSoTimeout(TIMEOUT);
             socket.send(new DatagramPacket(req, req.length));
             byte[] buf = new byte[MAX_QUERY];
@@ -240,15 +266,18 @@ public final class DnsForwardService extends Service {
             socket.receive(packet);
             byte[] ans = Arrays.copyOf(buf, packet.getLength());
             if (DnsPacket.validReply(req, ans) && DnsPacket.truncated(ans)) {
-                return forwardTcp(address, req);
+                return forwardTcp(address, req,targetPort);
             }
             return ans;
         }
     }
 
     private byte[] forwardTcp(InetAddress address, byte[] request) throws Exception {
+        return forwardTcp(address,request,port);
+    }
+    private byte[] forwardTcp(InetAddress address, byte[] request,int targetPort) throws Exception {
         try (Socket socket = new Socket()) {
-            socket.connect(new InetSocketAddress(address, port), TIMEOUT);
+            socket.connect(new InetSocketAddress(address, targetPort), TIMEOUT);
             socket.setSoTimeout(TIMEOUT);
             DataOutputStream out = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
             out.writeShort(request.length); out.write(request); out.flush();
@@ -271,28 +300,52 @@ public final class DnsForwardService extends Service {
     }
 
     private void healthLoop() {
-        int checks = 0;
-        while (running) {
-            try { Thread.sleep(12000L); } catch (InterruptedException ignored) { break; }
-            if (!running) break;
-            if (failures.get() >= 5 && !probeUpstream()) {
-                writeState(false, "上游连续请求失败，已触发自动恢复");
-                stopNow(); return;
+        int checks=0;
+        while(running) {
+            try {Thread.sleep(60000L);}catch(InterruptedException e){return;}
+            if(!running)break;
+            checks++;
+            // Use direct bootstrap IP sockets only. Android netd may not use our app UID.
+            boolean refresh=(checks%5==0 && backupIp!=null && !backupIp.trim().isEmpty());
+            UpstreamMonitor.Result primary=UpstreamMonitor.check(this,"主",host,port,
+                    refresh?backupIp:"",true,upstream);
+            if(primary.success && primary.ips.length>0 && refresh) upstream=primary.ips;
+            UpstreamMonitor.Result second=null;
+            if(secondaryHost!=null && !secondaryHost.trim().isEmpty()) {
+                second=UpstreamMonitor.check(this,"备用",secondaryHost,secondaryPort,
+                        refresh?backupIp:"",true,secondaryUpstream);
+                if(second.success && second.ips.length>0 && refresh) secondaryUpstream=second.ips;
             }
-            // Never call system getAllByName while redirect is active: on Android
-            // the resolver's network packets may have the dnsresolver UID, not app UID.
-            // Only explicitly configured raw-IP Bootstrap is safe during interception.
-            if (++checks % 25 == 0 && backupIp != null && !backupIp.trim().isEmpty()) {
-                try {
-                    InetAddress[] latest = DnsBootstrap.resolveOnlyViaBackup(host.trim(), backupIp);
-                    if (latest.length > 0) upstream = latest;
-                } catch (Exception ignored) { /* Keep the last known addresses. */ }
+            if(primary.success) usingSecondary=false;
+            else if(second!=null && second.success) usingSecondary=true;
+            saveActiveSnapshot();
+            if(!primary.success && (second==null || !second.success)) {
+                writeState(false,"主备 DNS 健康检测均失败，正在安全回滚");
+                stopNow();return;
             }
-            if (activated && !DnsRootRules.active(this)) {
-                writeState(false, "检测到接管规则不完整，已关闭");
-                stopNow(); return;
+            if(activated && !DnsRootRules.active(this)) {
+                writeState(false,"接管规则不完整，正在安全回滚");stopNow();return;
             }
         }
+    }
+    private boolean probeSecondary() {
+        byte[] query=DnsPacket.probeQuestion();
+        for(InetAddress ip:secondaryUpstream) {
+            try {if(DnsPacket.validReply(query,forwardUdp(ip,query,secondaryPort)))return true;}
+            catch(Exception ignored) { }
+        }
+        return false;
+    }
+    private void saveActiveSnapshot() {
+        InetAddress[] list=usingSecondary?secondaryUpstream:upstream;
+        StringBuilder b=new StringBuilder();
+        if(list!=null)for(InetAddress ip:list){if(b.length()>0)b.append(", ");b.append(ip.getHostAddress());}
+        activeIpText=b.toString();
+        getSharedPreferences(PREFS,MODE_PRIVATE).edit()
+                .putString("current_ip",activeIpText)
+                .putString("active_host",usingSecondary?secondaryHost:host)
+                .putInt("active_port",usingSecondary?secondaryPort:port)
+                .putString("active_role",usingSecondary?"备用":"主").apply();
     }
 
     private synchronized void stopNow() {
