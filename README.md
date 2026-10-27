@@ -1,4 +1,4 @@
-# DNS Observer — LSPosed module v0.1.0
+# DNS Observer — LSPosed module v0.1.1
 
 **专为系统 DNS 解析记录设计的独立 LSPosed 模块，Java + Android 原生视图，不需要 KernelSU 模块、VPN、网络权限。**
 
@@ -36,7 +36,7 @@ gradle :app:assembleDebug
 ## 安装
 
 1. 安装构建完成的 APK。
-2. LSPosed 中启用 `DNS Observer`，**只勾选「系统框架 / System Framework / system」**，不要勾选全部 App，也不要额外启用「Android 系统 UI」。
+2. LSPosed 中启用 `DNS Observer`：模块已通过 `AndroidManifest.xml` 的 **`xposedscope=system`** 提供推荐作用域。使用「推荐作用域」，确认只勾选 **「系统框架 / System Framework / system」**，不要勾选全部 App，也不要额外勾选 `android`（系统对话框/部分 UI 进程）。若你已给旧版模块设置过作用域，LSPosed 可能保留之前的选择；请手动恢复/应用推荐作用域。
 3. **完整重启手机**（这是系统进程 Hook，重启 App 不足以生效）。
 4. 打开 DNS Observer，页面显示「系统 DNS Hook 已连接」后，用浏览器访问从未访问过的域名，查看新记录。
 5. 如果始终没有心跳，先检查 LSPosed 模块日志中 `DNSObserver:` 标签；可能是 ColorOS 修改了 `SystemServer` 或 `NetdEventListenerService` 类位置 / 方法签名。**不要反复重启尝试不明 Hook 修补。**
@@ -66,4 +66,4 @@ AOSP DnsResolver / netd  -> NetdEventListenerService.onDnsEvent (system_server)
 
 ## 当前验证状态
 
-完成源代码静态检查、XML 解析检查以及独立 `TextPolicy` JVM 回归测试。当前执行环境没有 Android SDK / Gradle，**未完成 APK 编译或 ColorOS 16 实机运行验证**。发布的是开发验证版源码，不应视作已实测稳定版本。
+完成源代码静态检查、XML 解析检查以及独立 `TextPolicy` JVM 回归测试。当前执行环境没有 Android SDK / Gradle，**GitHub Actions 已完成 APK 编译，但尚未完成 ColorOS 16 实机运行验证**。发布的是开发验证版源码，不应视作已实测稳定版本。
