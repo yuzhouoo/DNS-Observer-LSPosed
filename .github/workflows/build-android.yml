@@ -38,10 +38,17 @@ jobs:
           javac -encoding UTF-8 -d /tmp/dnsobserver-jvm \
             app/src/main/java/dev/yz/dnsobserver/DnsPacket.java \
             app/src/main/java/dev/yz/dnsobserver/DnsBootstrap.java \
-            tests/DnsPacketTest.java
+            app/src/main/java/dev/yz/dnsobserver/DnsProbe.java \
+            app/src/main/java/dev/yz/dnsobserver/DnsFailover.java \
+            tests/DnsPacketTest.java \
+            tests/DnsProbeTest.java \
+            tests/DnsFailoverTest.java
           java -cp /tmp/dnsobserver-jvm dev.yz.dnsobserver.DnsPacketTest
+          java -cp /tmp/dnsobserver-jvm dev.yz.dnsobserver.DnsProbeTest
+          java -cp /tmp/dnsobserver-jvm dev.yz.dnsobserver.DnsFailoverTest
           python3 tests/test_sqlite_migration.py
           python3 tests/test_manifest.py
+          python3 tests/test_triple_dns.py
       - name: Build debug APK
         run: gradle --no-daemon :app:assembleDebug
       - name: Verify modern LSPosed module packaging
@@ -63,11 +70,11 @@ jobs:
           print('Verified: Modern API 102 resources included; no legacy entry')
           PY
       - name: Package complete source snapshot
-        run: git archive --format=zip --output=DNSObserver-v0.4.1-source.zip HEAD
+        run: git archive --format=zip --output=DNSObserver-v0.5.0-source.zip HEAD
       - uses: actions/upload-artifact@v4
         with:
-          name: DNSObserver-v0.4.1-source
-          path: DNSObserver-v0.4.1-source.zip
+          name: DNSObserver-v0.5.0-source
+          path: DNSObserver-v0.5.0-source.zip
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:

@@ -1,3 +1,34 @@
+# DNS Observer v0.5.0 — 三组上游 / 四通道 DNS 测速
+
+本版本在 v0.4.1 基础上增量扩展，保留 LSPosed Modern API 102 记录、Root 接管、应用名与系统 DNS 配置来源标注。
+
+## 新增
+
+- 3 组上游：主、从、备，分别设置独立域名和独立 UDP/TCP DNS 端口。原 v0.4.1 `secondary_host` 和 `secondary_port` 保留为「备」组，新增 `sub_host` 和 `sub_port` 作为「从」组，不丢旧设置。
+- 对每组域名先解析 A/AAAA，然后每个 IP 分别执行真实 **IPv4 UDP、IPv4 TCP、IPv6 UDP、IPv6 TCP** DNS 查询并显示耗时或具体失败原因；使用 `example.com A` 探针并验证响应 ID、QR、RCODE，TCP 测试包含 DNS 长度前缀、建连与响应耗时，非 ICMP Ping。
+- 4 通道独立显示最快可用 IP 的延迟及各通道成功/失败数量；单击展开各 IP 完整结果。IPv6 没有可用地址时明确显示「无IPv6地址」，不以失败或未知冒充。
+- `upstream_probe` 新 SQLite 表（版本 3），保存 IP、IPv4/IPv6、UDP/TCP、端口、延时、RCODE、失败原因和检测时间；旧版 `records`、`upstream_history` 原有数据保留。逐 IP 记录最近 30 天或最多 12000 条。
+- 每组最多测试 12 个 IPv4 和 12 个 IPv6（最多 48 个独立任务）。最多 8 线程并发、20 秒整体检测截止时间，限制无响应 DNS 带来的阻塞。跳过的超额地址数量会在界面中显示，**不是所有 DNS 地址无限制测试**。
+- 未接管时手动完整测速，以及 JobScheduler 约 15 分钟周期性探测；运行接管时每分钟快速测部分 IP，每 5 分钟完整扫描。实际定时可受系统省电与网络状态影响。
+- 主 → 从 → 备 优先级接管：单次失败会**仅重试本次请求**，3 次主动回退成功才改变全局目标；健康检查连续 2 次判定当前主力不可用时可以故障切换。切回更高优先级需要连续至少 3 次健康成功和切换后至少 5 分钟，降低主备抖动。普通 UDP 请求若 UDP 上游不可达，可尝试 TCP DNS 返回给本地 UDP 请求。
+- 开启接管时，如配置纯 IP Bootstrap，才会重解析上游域名；未配置时继续使用已缓存 IP，不允许 Android 系统解析器进入自身重定向回路。主、从、备的缓存 IP 均写入本地设置用于测速。
+
+## 安全限制与注意
+
+- 普通 DNS UDP/TCP (53) 才是 Root 透明接管目标；本版本 **不破解 DoH、DoT、DoQ**，也无法证明每条系统 DNS Hook 请求的实际 DNS 服务器。接管前手动测速不会修改防火墙。
+- 三组 DNS 测速中的「可用」指探针查询返回 NOERROR/NXDOMAIN（且响应 ID 匹配）。仅 DNS 响应成功，不代表该 DNS 对所有域名均可用；阻断 `example.com` 的自建 DNS 会被视为探针失败。
+- 上游 IP 定时检测可能增加电量与移动流量，全部测速的 IP 数量受限。
+- IPv6 测试不要求在 Root 接管中启用 IPv6。若设备没可用 IPv6 网络，IPv6 地址仍显示，但测试可能失败；与无 AAAA 地址区分。
+- 单次故障或全局网络断连时可能回滚 Root REDIRECT，不能保证所有 ColorOS/KernelSU 环境的异常均能自动清理。没有开机自动接管。
+- Debug APK 签名可能改变；覆盖安装失败前先导出 DNS 日志，卸载旧版会清掉 App 数据。
+- **尚未在你的 OnePlus 12 / Android 16 上实机验证 DNS 接管。** GitHub CI 的 Java 单元测试、SQLite 迁移测试及 Android APK 编译不能替代真实 Root 防火墙验证。
+
+## 诊断
+
+页面「主/从/备测速」中逐组展示 IPv4 UDP / TCP 和 IPv6 UDP / TCP，点开每组的 IP 明细。历史中保留最近的逐 IP 测试，聚合历史继续显示域名 IP 变化。对备用服务器出现「全部 UDP 未响应」但 TCP 正常的情况，新版本会明确展示两者不同的状态。
+
+---
+
 # DNS Observer — LSPosed module v0.4.1 (API 102)
 
 **专为系统 DNS 解析记录设计的独立 LSPosed 模块，Java + Android 原生视图，不需要 KernelSU 模块、VPN、网络权限。**

@@ -42,8 +42,11 @@ public final class DnsUpstreamJob extends JobService {
                     int port=safePort(p.getString("port","31017"));
                     String bootstrap=p.getString("bootstrap","");
                     if(!primary.isEmpty()) UpstreamMonitor.check(this,"主",primary,port,bootstrap,false,null);
+                    String sub=p.getString("sub_host","");
+                    if(!cancelled && !sub.isEmpty()) UpstreamMonitor.check(this,"从",sub,
+                            safePort(p.getString("sub_port","31017")),bootstrap,false,null);
                     String secondary=p.getString("secondary_host","");
-                    if(!cancelled && !secondary.isEmpty()) UpstreamMonitor.check(this,"备用",secondary,
+                    if(!cancelled && !secondary.isEmpty()) UpstreamMonitor.check(this,"备",secondary,
                             safePort(p.getString("secondary_port","31017")),bootstrap,false,null);
                 }
             } finally { jobFinished(params,false); }

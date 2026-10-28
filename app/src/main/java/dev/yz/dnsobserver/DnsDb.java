@@ -20,7 +20,7 @@ import java.util.Locale;
 
 public final class DnsDb extends SQLiteOpenHelper {
     private static final String NAME = "dns_log.db";
-    private static final int VERSION = 2;
+    private static final int VERSION = 3;
     public static final int MAX_RECORDS = 20000;
     public static final int PAGE_SIZE = 120;
     private static final long KEEP_MS = 14L * 86400_000L;
@@ -40,6 +40,7 @@ public final class DnsDb extends SQLiteOpenHelper {
         db.execSQL("CREATE INDEX idx_dns_host ON records(host)");
         db.execSQL("CREATE INDEX idx_dns_uid ON records(uid)");
         createUpstreamHistory(db);
+        createProbeHistory(db);
     }
     private static void createUpstreamHistory(SQLiteDatabase db) {
         db.execSQL("CREATE TABLE IF NOT EXISTS upstream_history (" +
@@ -47,6 +48,16 @@ public final class DnsDb extends SQLiteOpenHelper {
                 "role TEXT NOT NULL,host TEXT NOT NULL,ips TEXT NOT NULL," +
                 "latency INTEGER NOT NULL,success INTEGER NOT NULL,error TEXT NOT NULL)");
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_upstream_ts ON upstream_history(ts DESC)");
+    }
+    /** Exact per-IP, per-transport historical DNS probing results. */
+    private static void createProbeHistory(SQLiteDatabase db) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS upstream_probe (" +
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, runTs INTEGER NOT NULL," +
+                "role TEXT NOT NULL, host TEXT NOT NULL, ip TEXT NOT NULL," +
+                "family TEXT NOT NULL, transport TEXT NOT NULL, port INTEGER NOT NULL," +
+                "latency INTEGER NOT NULL, success INTEGER NOT NULL," +
+                "rcode INTEGER NOT NULL, error TEXT NOT NULL)");
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_upstream_probe ON upstream_probe(runTs DESC)");
     }
     @Override public void onUpgrade(SQLiteDatabase db, int from, int to) {
         if (from < 2) {
@@ -56,6 +67,7 @@ public final class DnsDb extends SQLiteOpenHelper {
             db.execSQL("ALTER TABLE records ADD COLUMN dnsSource TEXT NOT NULL DEFAULT '未观测'");
             createUpstreamHistory(db);
         }
+        if (from < 3) createProbeHistory(db);
     }
 
     public synchronized void insertBatch(Context context, ArrayList<Bundle> events) {
@@ -245,6 +257,51 @@ public final class DnsDb extends SQLiteOpenHelper {
             }
         }
         return out;
+    }
+    public synchronized void addProbeResult(String role,String host,int port,UpstreamMonitor.Result result) {
+        addUpstreamCheck(role,host,result.addressText,result.latencyMs,result.success,result.error);
+        if(result.samples.isEmpty())return;
+        SQLiteDatabase db=getWritableDatabase();
+        long now=System.currentTimeMillis();
+        db.beginTransaction();
+        try {
+            for(DnsProbe.Sample item:result.samples) {
+                ContentValues row=new ContentValues();
+                row.put("runTs",now);row.put("role",TextPolicy.clamp(role,16));
+                row.put("host",TextPolicy.clamp(host,253));row.put("ip",TextPolicy.clamp(item.ip,64));
+                row.put("family",item.family);row.put("transport",item.transport);
+                row.put("port",port);row.put("latency",item.latencyMs);
+                row.put("success",item.success?1:0);row.put("rcode",item.responseCode);
+                row.put("error",TextPolicy.clamp(item.error,160));
+                db.insertOrThrow("upstream_probe",null,row);
+            }
+            db.execSQL("DELETE FROM upstream_probe WHERE runTs < ?",new Object[]{now-30L*86400_000L});
+            db.execSQL("DELETE FROM upstream_probe WHERE id NOT IN (SELECT id FROM upstream_probe ORDER BY id DESC LIMIT 12000)");
+            db.setTransactionSuccessful();
+        } finally {db.endTransaction();}
+    }
+    public synchronized List<ProbeEntry> latestProbes(int limit) {
+        List<ProbeEntry> out=new ArrayList<>();
+        try(Cursor cursor=getReadableDatabase().rawQuery(
+              "SELECT runTs,role,host,ip,family,transport,port,latency,success,rcode,error FROM upstream_probe ORDER BY id DESC LIMIT " +
+              Math.max(1,Math.min(limit,400)),null)) {
+            while(cursor.moveToNext()) {
+                ProbeEntry e=new ProbeEntry();
+                e.ts=cursor.getLong(0);e.role=cursor.getString(1);e.host=cursor.getString(2);
+                e.ip=cursor.getString(3);e.family=cursor.getString(4);
+                e.transport=cursor.getString(5);e.port=cursor.getInt(6);
+                e.latency=cursor.getLong(7);e.success=cursor.getInt(8)!=0;
+                e.rcode=cursor.getInt(9);e.error=cursor.getString(10);
+                out.add(e);
+            }
+        }
+        return out;
+    }
+    public static final class ProbeEntry {
+        public long ts,latency;
+        public String role,host,ip,family,transport,error;
+        public int port,rcode;
+        public boolean success;
     }
     public static final class UpstreamEntry {
         public long ts,latency; public boolean success; public String role,host,ips,error;

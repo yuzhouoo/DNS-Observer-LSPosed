@@ -26,8 +26,10 @@ public final class DnsControlActivity extends Activity {
     private static final int BG = Color.rgb(11,18,32), FG = Color.rgb(235,244,253);
     private static final int SECOND = Color.rgb(150,180,196);
     private final Handler ui = new Handler(Looper.getMainLooper());
-    private EditText host, port, bootstrap, secondaryHost, secondaryPort;
+    private EditText host, port, bootstrap, subHost, subPort, secondaryHost, secondaryPort;
     private TextView history;
+    private LinearLayout speedResults;
+    private volatile boolean measuring;
     private CheckBox ipv6;
     private TextView status;
     private SharedPreferences prefs;
@@ -65,21 +67,28 @@ public final class DnsControlActivity extends Activity {
         LinearLayout root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(20),dp(16),dp(20),dp(24));scroll.addView(root);
         setContentView(scroll);
-        root.addView(label("DNS 接管 · v0.4.0",23,FG));
+        root.addView(label("DNS 接管 · v0.5.0",23,FG));
         root.addView(label("保留现有 LSPosed DNS 监控；接管仅作用于常规 UDP/TCP 53。\n需要 Root。默认关闭、不随系统开机启动。",13,SECOND));
         status=label("正在检查状态…",15,FG);root.addView(status);
-        host=field(root,"上游 DNS 域名（不带协议、端口）",prefs.getString("host",""));
-        port=field(root,"上游 DNS 端口",prefs.getString("port","31017"));
+        host=field(root,"主 DNS 域名（不带协议、端口）",prefs.getString("host",""));
+        port=field(root,"主 DNS 端口",prefs.getString("port","31017"));
         port.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
-        secondaryHost=field(root,"备用上游 DNS 域名（故障时使用，可留空）",prefs.getString("secondary_host",""));
-        secondaryPort=field(root,"备用上游端口",prefs.getString("secondary_port","31017"));
+        subHost=field(root,"从 DNS 域名（可留空）",prefs.getString("sub_host",""));
+        subPort=field(root,"从 DNS 端口",prefs.getString("sub_port","31017"));
+        subPort.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        secondaryHost=field(root,"备 DNS 域名（原备用 DNS，故障时使用）",prefs.getString("secondary_host",""));
+        secondaryPort=field(root,"备 DNS 端口",prefs.getString("secondary_port","31017"));
         secondaryPort.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
         bootstrap=field(root,"Bootstrap DNS 纯 IP（域名刷新使用，可留空）",prefs.getString("bootstrap",""));
         ipv6=new CheckBox(this);ipv6.setText("同时重定向 IPv6 DNS（实验性，需 ip6tables NAT）");
         ipv6.setTextColor(FG);ipv6.setChecked(prefs.getBoolean("ipv6",false));
         root.addView(ipv6);
         root.addView(label("引导流程：优先系统 DNS 解析上游域名，失败时可使用备用纯 IP DNS。启用后只刷新上游地址，不修改系统 DNS 设置。",12,SECOND));
-        button("检测上游 UDP/TCP DNS（不需要 Root）",root).setOnClickListener(v->testServer());
+        root.addView(label("四通道独立测速：IPv4 UDP · IPv4 TCP · IPv6 UDP · IPv6 TCP。\n每个解析出的 IP 单独发起真实 DNS 请求，测速不会自动切换主从备。",12,SECOND));
+        button("开始主 / 从 / 备四通道测速",root).setOnClickListener(v->testServer());
+        speedResults=new LinearLayout(this);speedResults.setOrientation(LinearLayout.VERTICAL);
+        root.addView(speedResults);
+        speedResults.addView(label("未开始测速；点击上方按钮查看每个 IP 的独立延迟。",13,SECOND));
         button("启动 DNS 接管",root).setOnClickListener(v->new AlertDialog.Builder(this)
                 .setTitle("启用 Root DNS 接管？")
                 .setMessage("将重定向本机普通 UDP/TCP 53 请求。请确认你可以使用 KernelSU 或 Root 命令恢复网络。首次使用请关闭其它 DNS 重定向规则。")
@@ -103,8 +112,8 @@ public final class DnsControlActivity extends Activity {
         },"DNS-emergency").start();
         });
         root.addView(label("健康监测 · 每约 15 分钟在未接管时由系统调度，接管时每 60 秒测延时、每 5 分钟尝试刷新 IP。实际触发可能受系统省电影响；接管期间若未配置 Bootstrap 纯 IP，只监测已缓存地址。",12,SECOND));
-        button("立即检测主备 DNS 并写入历史",root).setOnClickListener(v->testServer());
-        root.addView(label("上游检测与 IP 历史",17,FG));
+        button("重新测速并保存全部 IP / 协议历史",root).setOnClickListener(v->testServer());
+        root.addView(label("主从备测速 / IP 历史",17,FG));
         history=label("正在加载历史…",12,SECOND);root.addView(history);
         root.addView(label("安全说明：本模块只清理 DOBSR53 专属防火墙链，不清空系统规则。单独的 Root 监视脚本会在应用进程消失时尝试回滚；无法保证所有 ROM / Root 实现上的绝对自动恢复。",12,SECOND));
     }
@@ -112,6 +121,8 @@ public final class DnsControlActivity extends Activity {
         prefs.edit().putString("host",host.getText().toString().trim())
                 .putString("port",port.getText().toString().trim())
                 .putString("bootstrap",bootstrap.getText().toString().trim())
+                .putString("sub_host",subHost.getText().toString().trim())
+                .putString("sub_port",subPort.getText().toString().trim())
                 .putString("secondary_host",secondaryHost.getText().toString().trim())
                 .putString("secondary_port",secondaryPort.getText().toString().trim())
                 .putBoolean("ipv6",ipv6.isChecked()).apply();
@@ -126,18 +137,34 @@ public final class DnsControlActivity extends Activity {
         String name=host.getText().toString().trim();
         if(name.isEmpty()||name.contains("://")||name.contains("/")||name.contains(" ")||name.length()>253)
             throw new IllegalArgumentException("请填写纯域名，不含协议、端口或路径");
+        String sub=subHost.getText().toString().trim();
+        if(!sub.isEmpty() && (sub.contains("://")||sub.contains("/")||sub.contains(" ")||sub.length()>253))
+            throw new IllegalArgumentException("从 DNS 必须是纯域名");
+        if(!sub.isEmpty())checkedExtraPort(subPort,"从 DNS");
         String second=secondaryHost.getText().toString().trim();
         if(!second.isEmpty() && (second.contains("://")||second.contains("/")||second.contains(" ")||second.length()>253))
             throw new IllegalArgumentException("备用 DNS 必须是纯域名");
-        if(!second.isEmpty()) {
-            try {int p=Integer.parseInt(secondaryPort.getText().toString().trim());if(p<1||p>65535)throw new Exception();}
-            catch(Exception e){throw new IllegalArgumentException("备用端口必须在 1~65535");}
-        }
+        if(!second.isEmpty())checkedExtraPort(secondaryPort,"备 DNS");
         String b=bootstrap.getText().toString().trim();
         if(!b.isEmpty()) {
             try { DnsBootstrap.parseLiteral(b); } catch(Exception e) {throw new IllegalArgumentException("备用引导 DNS 必须是纯 IP");}
         }
         return name;
+    }
+    private int checkedExtraPort(EditText field,String role) {
+        try {
+            int p=Integer.parseInt(field.getText().toString().trim());
+            if(p<1||p>65535)throw new NumberFormatException();
+            return p;
+        } catch(Exception e){throw new IllegalArgumentException(role+" 端口必须在 1~65535");}
+    }
+    private java.net.InetAddress[] knownIps(int role) {
+        String raw=prefs.getString("role_ips_"+role,"");
+        java.util.ArrayList<java.net.InetAddress> list=new java.util.ArrayList<>();
+        for(String ip:raw.split(","))try {
+            if(!ip.trim().isEmpty())list.add(DnsBootstrap.parseLiteral(ip.trim()));
+        } catch(Exception ignored) { }
+        return list.toArray(new java.net.InetAddress[0]);
     }
     private void startProxy() {
         try {
@@ -145,6 +172,8 @@ public final class DnsControlActivity extends Activity {
             Intent i=new Intent(this,DnsForwardService.class).setAction(DnsForwardService.ACTION_START);
             i.putExtra("host",hostname);i.putExtra("port",number);
             i.putExtra("bootstrap",bootstrap.getText().toString().trim());i.putExtra("ipv6",ipv6.isChecked());
+            i.putExtra("sub_host",subHost.getText().toString().trim());
+            i.putExtra("sub_port",subHost.getText().toString().trim().isEmpty()?31017:checkedExtraPort(subPort,"从 DNS"));
             i.putExtra("secondary_host",secondaryHost.getText().toString().trim());
             i.putExtra("secondary_port",secondaryHost.getText().toString().trim().isEmpty()?31017:
                     Integer.parseInt(secondaryPort.getText().toString().trim()));
@@ -153,27 +182,92 @@ public final class DnsControlActivity extends Activity {
         } catch(Exception e){status.setText("配置错误："+e.getMessage());}
     }
     private void testServer() {
-        if (prefs.getBoolean("running", false)) {
-            status.setText("请先停止接管再检测，避免在接管过程中调用系统 Bootstrap DNS");
-            return;
-        }
-        final String name;
-        final String backup;
-        final int upstreamPort;
-        try {name=checkedHost();upstreamPort=checkedPort();backup=bootstrap.getText().toString().trim();persist();}
-        catch(Exception e){status.setText("配置错误："+e.getMessage());return;}
-        status.setText("正在检测主备上游并记录 IP / 延时…");
-        final String secondary=secondaryHost.getText().toString().trim();
-        final int secondPort=secondary.isEmpty()?31017:Integer.parseInt(secondaryPort.getText().toString().trim());
+        if(measuring){status.setText("正在进行测速，请勿重复提交");return;}
+        final String[] domains=new String[3];
+        final int[] ports=new int[3];
+        final String bootstrapIp;
+        final boolean active=prefs.getBoolean("running",false);
+        try {
+            domains[0]=checkedHost();ports[0]=checkedPort();
+            domains[1]=subHost.getText().toString().trim();
+            domains[2]=secondaryHost.getText().toString().trim();
+            ports[1]=domains[1].isEmpty()?31017:checkedExtraPort(subPort,"从 DNS");
+            ports[2]=domains[2].isEmpty()?31017:checkedExtraPort(secondaryPort,"备 DNS");
+            bootstrapIp=bootstrap.getText().toString().trim();
+            if(active && bootstrapIp.isEmpty()) {
+                // Known per-role IPs are updated when the service starts/refreshed.
+                for(int role=0;role<3;role++)if(!domains[role].isEmpty() && knownIps(role).length==0)
+                    throw new IllegalArgumentException("接管中且未配置 Bootstrap；"+DnsFailover.NAMES[role]+" DNS 没有缓存 IP，请先停用接管再测速");
+            }
+            persist();
+        } catch(Exception e){status.setText("测速配置错误："+e.getMessage());return;}
+        measuring=true;
+        status.setText("正在执行 IPv4/IPv6 × UDP/TCP 分项检测（最长约数十秒）…");
         new Thread(()->{
-            UpstreamMonitor.Result primary=UpstreamMonitor.check(this,"主",name,upstreamPort,backup,false,null);
-            UpstreamMonitor.Result second=secondary.isEmpty()?null:
-                    UpstreamMonitor.check(this,"备用",secondary,secondPort,backup,false,null);
-            String result="主 DNS："+(primary.success?"成功":"失败")+" · "+primary.latencyMs+" ms · "+primary.addressText;
-            if(second!=null)result+="\n备用 DNS："+(second.success?"成功":"失败")+" · "+second.latencyMs+" ms · "+second.addressText;
-            final String message=result;
-            ui.post(()->{status.setText(message);refreshHistory();});
-        },"DNS-test").start();
+            UpstreamMonitor.Result[] results=new UpstreamMonitor.Result[3];
+            try {
+                for(int role=0;role<3;role++) {
+                    if(domains[role].isEmpty())continue;
+                    results[role]=UpstreamMonitor.check(this,DnsFailover.NAMES[role],domains[role],
+                            ports[role],bootstrapIp,active,active?knownIps(role):null);
+                }
+            } catch(Throwable t) {
+                android.util.Log.e("DNSObserver","DNS speed test unexpected failure",t);
+            }
+            ui.post(()->{
+                measuring=false;
+                if(isFinishing()||isDestroyed())return;
+                renderSpeeds(domains,ports,results);
+                status.setText("三组四通道测速结束；详细结果及 IP 历史已保存");
+                refreshHistory();
+            });
+        },"DNS-speed-test").start();
+    }
+    private TextView speedCell(String title,String value) {
+        TextView cell=label(title+"\n"+value,12,FG);
+        cell.setPadding(dp(7),dp(10),dp(5),dp(10));
+        cell.setBackgroundColor(Color.rgb(24,39,58));
+        return cell;
+    }
+    private void renderSpeeds(String[] domains,int[] ports,UpstreamMonitor.Result[] values) {
+        speedResults.removeAllViews();
+        for(int role=0;role<3;role++) {
+            LinearLayout card=new LinearLayout(this);card.setOrientation(LinearLayout.VERTICAL);
+            card.setPadding(dp(10),dp(10),dp(10),dp(12));
+            LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);
+            lp.topMargin=dp(10);speedResults.addView(card,lp);
+            card.setBackgroundColor(Color.rgb(20,33,50));
+            final String title=DnsFailover.NAMES[role]+" DNS";
+            if(domains[role].isEmpty()){
+                card.addView(label(title+" · 未配置",16,SECOND));continue;
+            }
+            UpstreamMonitor.Result r=values[role];
+            card.addView(label(title+" · "+domains[role]+":"+ports[role],16,FG));
+            if(r==null){card.addView(label("测速未完成",12,SECOND));continue;}
+            for(String family:new String[]{"IPv4","IPv6"}) {
+                LinearLayout columns=new LinearLayout(this);
+                LinearLayout.LayoutParams row=new LinearLayout.LayoutParams(-1,-2);row.topMargin=dp(5);
+                card.addView(columns,row);
+                for(String transport:new String[]{"UDP","TCP"}) {
+                    TextView cell=speedCell(family+" "+transport,r.summary(family,transport));
+                    LinearLayout.LayoutParams cellLp=new LinearLayout.LayoutParams(0,-2,1);
+                    cellLp.rightMargin=dp(3);
+                    columns.addView(cell,cellLp);
+                }
+            }
+            String details=r.detail();
+            if(!r.error.isEmpty())card.addView(label("检测说明："+r.error,12,SECOND));
+            if(!details.isEmpty()){
+                TextView expanded=label("查看每个 IP 的 TCP / UDP 明细（"+r.samples.size()+" 项）  ▾",12,SECOND);
+                card.addView(expanded);
+                expanded.setOnClickListener(new android.view.View.OnClickListener(){boolean open;
+                    @Override public void onClick(android.view.View v) {
+                        open=!open;
+                        expanded.setText(open?details:"查看每个 IP 的 TCP / UDP 明细（"+r.samples.size()+" 项）  ▾");
+                    }
+                });
+            }
+        }
     }
     private void refreshHistory() {
         if(history==null)return;
@@ -194,6 +288,13 @@ public final class DnsControlActivity extends Activity {
                      .append(changed?" · IP 变化":"").append("\n")
                      .append(item.host).append(" → ").append(item.ips.isEmpty()?"未知":item.ips)
                      .append(item.error.isEmpty()?"":" · "+item.error).append("\n\n");
+                }
+                b.append("— 最近逐 IP 四通道测速记录 —\n");
+                for(DnsDb.ProbeEntry entry:new DnsDb(this).latestProbes(80)) {
+                    b.append(fmt.format(new java.util.Date(entry.ts))).append(' ').append(entry.role)
+                     .append(' ').append(entry.family).append(' ').append(entry.transport).append(' ')
+                     .append(entry.ip).append(':').append(entry.port).append("  ")
+                     .append(entry.success?(entry.latency+" ms"):("失败 · "+entry.error)).append('\n');
                 }
             } catch(Exception e){b.append("历史读取失败：").append(e.getClass().getSimpleName());}
             String value=b.length()==0?"暂无检测历史":b.toString();

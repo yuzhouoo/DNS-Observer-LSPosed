@@ -41,10 +41,12 @@ public final class DnsForwardService extends Service {
     private volatile boolean cancellationRequested;
     private final Object firewallLock = new Object();
     private volatile InetAddress[] upstream = new InetAddress[0];
-    private volatile String host, backupIp, secondaryHost;
+    private volatile String host, backupIp, secondaryHost, subHost;
+    // Legacy secondary_* settings remain the third "备" group; sub_* is the new "从" group.
     private volatile InetAddress[] secondaryUpstream=new InetAddress[0];
-    private volatile int secondaryPort;
-    private volatile boolean usingSecondary;
+    private volatile InetAddress[] subUpstream=new InetAddress[0];
+    private volatile int secondaryPort, subPort;
+    private volatile DnsFailover rolePolicy = new DnsFailover(0,0);
     private volatile String activeIpText="";
     private volatile int port;
     private volatile boolean useIpv6;
@@ -79,6 +81,8 @@ public final class DnsForwardService extends Service {
         port = intent.getIntExtra("port", 31017);
         secondaryHost = intent.getStringExtra("secondary_host");
         secondaryPort = intent.getIntExtra("secondary_port",31017);
+        subHost = intent.getStringExtra("sub_host");
+        subPort = intent.getIntExtra("sub_port",31017);
         useIpv6 = intent.getBooleanExtra("ipv6", false);
         session = UUID.randomUUID().toString().replace("-", "");
         manager = new Thread(this::startNow, "DNS-manager");
@@ -108,27 +112,30 @@ public final class DnsForwardService extends Service {
                 throw new IllegalArgumentException("请填写上游 DNS 域名");
             if (port < 1 || port > 65535) throw new IllegalArgumentException("上游端口不合法");
             if (secondaryHost!=null && !secondaryHost.trim().isEmpty()
-                    && (secondaryPort<1 || secondaryPort>65535)) throw new IllegalArgumentException("备用上游端口错误");
+                    && (secondaryPort<1 || secondaryPort>65535)) throw new IllegalArgumentException("备 DNS 端口错误");
+            if (subHost!=null && !subHost.trim().isEmpty()
+                    && (subPort<1 || subPort>65535)) throw new IllegalArgumentException("从 DNS 端口错误");
             if (backupIp != null && !backupIp.trim().isEmpty()) DnsBootstrap.parseLiteral(backupIp.trim());
             // Clear a stale redirect BEFORE asking Android's system resolver.
             // Even our app's getAllByName may be sent over netd/dnsresolver UID.
             DnsRootRules.remove(this);
             if (cancellationRequested) throw new IOException("用户已取消 DNS 接管启动");
-            InetAddress[] resolved;
-            try { resolved=DnsBootstrap.resolve(host.trim(), backupIp); }
-            catch (Exception e) { resolved=new InetAddress[0]; }
-            upstream=resolved;
-            // Failure of primary bootstrap must not prevent trying a configured backup.
-            boolean primaryAvailable=resolved.length>0 && probeUpstream();
-            if (secondaryHost!=null && !secondaryHost.trim().isEmpty()) {
-                try {
-                    secondaryUpstream=DnsBootstrap.resolve(secondaryHost.trim(),backupIp);
-                } catch(Exception e) {secondaryUpstream=new InetAddress[0];}
+            try { upstream=DnsBootstrap.resolve(host.trim(), backupIp); }
+            catch(Exception e) {upstream=new InetAddress[0];}
+            if(subHost!=null && !subHost.trim().isEmpty()) {
+                try {subUpstream=DnsBootstrap.resolve(subHost.trim(),backupIp);}
+                catch(Exception e){subUpstream=new InetAddress[0];}
             }
-            boolean secondaryAvailable=!primaryAvailable && probeSecondary();
-            if(!primaryAvailable && !secondaryAvailable)
-                throw new IOException("主备 DNS UDP 均不可达");
-            usingSecondary=secondaryAvailable;
+            if(secondaryHost!=null && !secondaryHost.trim().isEmpty()) {
+                try {secondaryUpstream=DnsBootstrap.resolve(secondaryHost.trim(),backupIp);}
+                catch(Exception e){secondaryUpstream=new InetAddress[0];}
+            }
+            int initial=-1;
+            for(int role=0;role<3;role++) {
+                if(probeGroup(role)) {initial=role;break;}
+            }
+            if(initial<0)throw new IOException("主、从、备 DNS 都没有可用的 UDP/TCP DNS 响应");
+            rolePolicy=new DnsFailover(initial,android.os.SystemClock.elapsedRealtime());
             saveActiveSnapshot();
             if (cancellationRequested) throw new IOException("用户已取消 DNS 接管启动");
             bindSockets();
@@ -143,7 +150,7 @@ public final class DnsForwardService extends Service {
                 activated = true;
             }
             if (cancellationRequested) { stopNow(); return; }
-            writeState(true, "接管已启动 · " + (usingSecondary?"备用":"主")+" DNS");
+            writeState(true, "接管已启动 · " + DnsFailover.NAMES[rolePolicy.current()]+" DNS");
             Thread health = new Thread(this::healthLoop, "DNS-health");
             health.setDaemon(true);
             health.start();
@@ -231,27 +238,47 @@ public final class DnsForwardService extends Service {
         } catch (Exception ignored) { }
     }
 
+    private InetAddress[] addressesFor(int role) {
+        return role==0?upstream:role==1?subUpstream:secondaryUpstream;
+    }
+    private int portFor(int role) {return role==0?port:role==1?subPort:secondaryPort;}
+    private String hostFor(int role) {return role==0?host:role==1?subHost:secondaryHost;}
+
     private byte[] forward(byte[] request, boolean tcp) throws Exception {
-        if (!DnsPacket.validQuestion(request)) return DnsPacket.servfail(request);
-        Exception last = null;
-        for(int pass=0;pass<2;pass++) {
-            boolean secondary=(pass==0)?usingSecondary:!usingSecondary;
-            InetAddress[] choices=secondary?secondaryUpstream:upstream;
-            int targetPort=secondary?secondaryPort:port;
-            if(choices==null || choices.length==0)continue;
+        if(!DnsPacket.validQuestion(request))return DnsPacket.servfail(request);
+        final int initiallyActive=rolePolicy.current();
+        Exception last=null;
+        // Active first, then other configured servers by fixed priority (主->从->备).
+        for(int pass=0;pass<3;pass++) {
+            int role=pass==0?initiallyActive:(pass<=initiallyActive?pass-1:pass);
+            InetAddress[] choices=addressesFor(role);
+            if(choices==null||choices.length==0)continue;
+            int targetPort=portFor(role);
             for(int i=0;i<choices.length;i++) {
                 InetAddress addr=choices[Math.floorMod(cursor.getAndIncrement(),choices.length)];
                 try {
-                    byte[] answer=tcp?forwardTcp(addr,request,targetPort):forwardUdp(addr,request,targetPort);
-                    if(!DnsPacket.validReply(request,answer))throw new IOException("DNS response ID/QR mismatch");
+                    byte[] answer;
+                    if(tcp) answer=forwardTcp(addr,request,targetPort);
+                    else {
+                        try {answer=forwardUdp(addr,request,targetPort);}
+                        catch(Exception udpFailed) {
+                            // A TCP-only DNS server must not be marked unreachable.
+                            answer=forwardTcp(addr,request,targetPort);
+                        }
+                    }
+                    if(!DnsPacket.validReply(request,answer))throw new IOException("DNS 响应 ID/QR 不匹配");
+                    int rcode=answer[3]&15;
+                    if(rcode==2||rcode==5)throw new IOException("上游返回 RCODE="+rcode);
                     failures.set(0);
-                    if(usingSecondary!=secondary){usingSecondary=secondary;saveActiveSnapshot();}
+                    boolean switched=rolePolicy.onForward(initiallyActive,role,
+                            android.os.SystemClock.elapsedRealtime());
+                    if(switched)saveActiveSnapshot();
                     return answer;
                 } catch(Exception e){last=e;}
             }
         }
         failures.incrementAndGet();
-        throw last==null?new IOException("主备 DNS 不可用"):last;
+        throw last==null?new IOException("主、从、备 DNS 均不可用"):last;
     }
 
     private byte[] forwardUdp(InetAddress address, byte[] req) throws Exception {
@@ -290,12 +317,16 @@ public final class DnsForwardService extends Service {
         }
     }
 
-    private boolean probeUpstream() {
-        byte[] query = DnsPacket.probeQuestion();
-        InetAddress[] addresses = upstream;
-        for (InetAddress candidate : addresses) {
-            try { if (DnsPacket.validReply(query, forwardUdp(candidate, query))) return true; }
-            catch (Exception ignored) { }
+    /** Start-up does a real DNS query over both transports, not a bare connect test. */
+    private boolean probeGroup(int role) {
+        InetAddress[] candidates=addressesFor(role);
+        if(candidates==null||candidates.length==0)return false;
+        int p=portFor(role);
+        // Test up to 8 addresses at startup; the full per-IP sweep belongs to the speed test.
+        for(int i=0;i<Math.min(8,candidates.length);i++) {
+            InetAddress address=candidates[i];
+            if(DnsProbe.measure(address,p,"UDP").success)return true;
+            if(DnsProbe.measure(address,p,"TCP").success)return true;
         }
         return false;
     }
@@ -303,50 +334,62 @@ public final class DnsForwardService extends Service {
     private void healthLoop() {
         int checks=0;
         while(running) {
-            try {Thread.sleep(60000L);}catch(InterruptedException e){return;}
+            try {Thread.sleep(60_000L);}catch(InterruptedException e){return;}
             if(!running)break;
             checks++;
-            // Use direct bootstrap IP sockets only. Android netd may not use our app UID.
-            boolean refresh=(checks%5==0 && backupIp!=null && !backupIp.trim().isEmpty());
-            UpstreamMonitor.Result primary=UpstreamMonitor.check(this,"主",host,port,
-                    refresh?backupIp:"",true,upstream);
-            if(primary.success && primary.ips.length>0 && refresh) upstream=primary.ips;
-            UpstreamMonitor.Result second=null;
-            if(secondaryHost!=null && !secondaryHost.trim().isEmpty()) {
-                second=UpstreamMonitor.check(this,"备用",secondaryHost,secondaryPort,
-                        refresh?backupIp:"",true,secondaryUpstream);
-                if(second.success && second.ips.length>0 && refresh) secondaryUpstream=second.ips;
+            // IP refresh uses raw-IP Bootstrap only. Never call Android netd under REDIRECT.
+            boolean refresh=checks%5==0 && backupIp!=null && !backupIp.trim().isEmpty();
+            boolean full=checks%5==0;
+            UpstreamMonitor.Result[] reports=new UpstreamMonitor.Result[3];
+            boolean[] configured=new boolean[3],healthy=new boolean[3];
+            for(int role=0;role<3 && running;role++) {
+                String name=hostFor(role);
+                configured[role]=name!=null&&!name.trim().isEmpty();
+                if(!configured[role])continue;
+                reports[role]=UpstreamMonitor.check(this,DnsFailover.NAMES[role],name,
+                        portFor(role),refresh?backupIp:"",true,addressesFor(role),!full);
+                healthy[role]=reports[role].success;
+                if(refresh && healthy[role] && reports[role].ips.length>0) {
+                    if(role==0)upstream=reports[role].ips;
+                    else if(role==1)subUpstream=reports[role].ips;
+                    else secondaryUpstream=reports[role].ips;
+                }
             }
-            if(primary.success) usingSecondary=false;
-            else if(second!=null && second.success) usingSecondary=true;
-            saveActiveSnapshot();
-            if(!primary.success && (second==null || !second.success)) {
-                writeState(false,"主备 DNS 健康检测均失败，正在安全回滚");
+            if(!running)break;
+            boolean any=false;for(boolean ok:healthy)any|=ok;
+            if(!any) {
+                writeState(false,"主、从、备 DNS 健康检测均失败，正在恢复系统 DNS");
                 stopNow();return;
             }
+            if(rolePolicy.onHealth(configured,healthy,android.os.SystemClock.elapsedRealtime()))
+                writeState(true,"DNS 优先级切换到 " + DnsFailover.NAMES[rolePolicy.current()]);
+            saveActiveSnapshot();
             if(activated && !DnsRootRules.active(this)) {
                 writeState(false,"接管规则不完整，正在安全回滚");stopNow();return;
             }
         }
     }
-    private boolean probeSecondary() {
-        byte[] query=DnsPacket.probeQuestion();
-        for(InetAddress ip:secondaryUpstream) {
-            try {if(DnsPacket.validReply(query,forwardUdp(ip,query,secondaryPort)))return true;}
-            catch(Exception ignored) { }
-        }
-        return false;
-    }
     private void saveActiveSnapshot() {
-        InetAddress[] list=usingSecondary?secondaryUpstream:upstream;
+        int role=rolePolicy.current();
+        InetAddress[] list=addressesFor(role);
         StringBuilder b=new StringBuilder();
         if(list!=null)for(InetAddress ip:list){if(b.length()>0)b.append(", ");b.append(ip.getHostAddress());}
         activeIpText=b.toString();
+        String[] ipsByRole=new String[3];
+        for(int i=0;i<3;i++) {
+            StringBuilder roleIps=new StringBuilder();
+            InetAddress[] set=addressesFor(i);
+            if(set!=null)for(InetAddress ip:set){if(roleIps.length()>0)roleIps.append(",");roleIps.append(ip.getHostAddress());}
+            ipsByRole[i]=roleIps.toString();
+        }
         getSharedPreferences(PREFS,MODE_PRIVATE).edit()
+                .putString("role_ips_0",ipsByRole[0])
+                .putString("role_ips_1",ipsByRole[1])
+                .putString("role_ips_2",ipsByRole[2])
                 .putString("current_ip",activeIpText)
-                .putString("active_host",usingSecondary?secondaryHost:host)
-                .putInt("active_port",usingSecondary?secondaryPort:port)
-                .putString("active_role",usingSecondary?"备用":"主").apply();
+                .putString("active_host",hostFor(role))
+                .putInt("active_port",portFor(role))
+                .putString("active_role",DnsFailover.NAMES[role]).apply();
     }
 
     private synchronized void stopNow() {
