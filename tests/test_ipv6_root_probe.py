@@ -23,3 +23,11 @@ assert 'if(!clean || !loopUdp || !loopTcp)' in e
 assert 'finally{cleanup(ctx,report);}' in e
 assert 'VERIFY_CLEAN' in s and 'VERIFY_FAILED' in s
 print('PASS: TCP+UDP root socket and staged recovery')
+
+assert 'UPSTREAM' in h and 'UPSTREAM' in e
+assert 'DnsUpstreamExchange.query(' in h
+assert 'selectUpstream(ctx,"UDP",report)' in e
+assert 'selectUpstream(ctx,"TCP",report)' in e
+assert e.index('selectUpstream(ctx,"UDP",report)') < e.index('root(ctx,"install-dns",token,10)',e.index('selectUpstream(ctx,"UDP",report)'))
+assert 'DnsRootRules.active(ctx)' in e
+print('PASS: isolated upstream forwarding and before-rule preflight')

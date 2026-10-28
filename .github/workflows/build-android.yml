@@ -39,21 +39,25 @@ jobs:
           python3 tests/test_ipv6_experiment.py
           python3 tests/test_ipv6_simulator.py
           python3 tests/test_ipv6_root_probe.py
+          python3 tests/test_upstream_isolated.py
           python3 tests/test_ipv6_listener_lifecycle.py
           python3 tests/test_log_copy.py
           mkdir -p /tmp/dnsobserver-jvm
           javac -encoding UTF-8 -d /tmp/dnsobserver-jvm \
             app/src/main/java/dev/yz/dnsobserver/DnsPacket.java \
+            app/src/main/java/dev/yz/dnsobserver/DnsUpstreamExchange.java \
             app/src/main/java/dev/yz/dnsobserver/DnsBootstrap.java \
             app/src/main/java/dev/yz/dnsobserver/DnsProbe.java \
             app/src/main/java/dev/yz/dnsobserver/DnsFailover.java \
             tests/DnsPacketTest.java \
+            tests/DnsUpstreamExchangeTest.java \
             tests/DnsProbeTest.java \
             app/src/main/java/dev/yz/dnsobserver/DnsIcmpProbe.java \
             app/src/main/java/dev/yz/dnsobserver/DnsDiagnosis.java \
             tests/DnsIcmpProbeTest.java \
             tests/DnsFailoverTest.java
           java -cp /tmp/dnsobserver-jvm dev.yz.dnsobserver.DnsPacketTest
+          java -cp /tmp/dnsobserver-jvm dev.yz.dnsobserver.DnsUpstreamExchangeTest
           java -cp /tmp/dnsobserver-jvm dev.yz.dnsobserver.DnsProbeTest
           java -cp /tmp/dnsobserver-jvm dev.yz.dnsobserver.DnsIcmpProbeTest
           java -cp /tmp/dnsobserver-jvm dev.yz.dnsobserver.DnsFailoverTest
@@ -83,11 +87,11 @@ jobs:
           print('Verified: Modern API 102 resources included; no legacy entry')
           PY
       - name: Package complete source snapshot
-        run: git archive --format=zip --output=DNSObserver-v0.5.8-source.zip HEAD
+        run: git archive --format=zip --output=DNSObserver-v0.5.9-source.zip HEAD
       - uses: actions/upload-artifact@v4
         with:
-          name: DNSObserver-v0.5.8-source
-          path: DNSObserver-v0.5.8-source.zip
+          name: DNSObserver-v0.5.9-source
+          path: DNSObserver-v0.5.9-source.zip
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
