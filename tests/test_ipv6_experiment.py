@@ -1,16 +1,21 @@
 from pathlib import Path
 base=Path(__file__).resolve().parents[1]
-script=(base/'app/src/main/assets/dns-ipv6-tproxy-probe.sh').read_text()
+s=(base/'app/src/main/assets/dns-ipv6-tproxy-probe.sh').read_text()
 ui=(base/'app/src/main/java/dev/yz/dnsobserver/DnsControlActivity.java').read_text()
 service=(base/'app/src/main/java/dev/yz/dnsobserver/DnsForwardService.java').read_text()
 rules=(base/'app/src/main/java/dev/yz/dnsobserver/DnsRootRules.java').read_text()
-assert 'PREROUTING' in script and '--dport 15453' in script
-assert '--on-port 15454' in script and '--on-ip ::1' in script
-assert '20' in script and 'watch)' in script and 'recover)' in script
-assert 'ip6tables -t nat' not in script
-assert 'ip -6 rule' not in script and 'route add' not in script
-assert 'OUTPUT' not in script.replace('OUTPUT,','')  # no OUTPUT modifications
-assert 'DNS 接管' in ui and 'DnsIpv6Experiment.run' in ui and 'DnsIpv6Experiment.recover' in ui
+assert 'DO6TST55' in s and 'install-loop|install-local|recover|status|watch' in s
+assert '--on-port "$PROXY"' in s and '--on-ip ::1' in s
+assert 'watch)' in s and 'verify_clean()' in s and '35' in s
+assert 'ip6tables -t nat' not in s and '--dport 53 ' not in s  # no real DNS intercept
+assert '2001:db8:ffff::53' in s and '15453' in s and '15454' in s
+assert '-m owner --uid-owner "$UID_ARG"' in s and 'OUTPUT 1' in s
+assert 'route add local "$TEST_ADDR" dev lo table "$TABLE"' in s
+assert 'rule add pref "$PREF" fwmark "$MARK" lookup "$TABLE"' in s
+assert 'rule del pref "$PREF" fwmark "$MARK" lookup "$TABLE"' in s
+assert 'route del local "$TEST_ADDR" dev lo table "$TABLE"' in s
+assert '^[[:space:]]*15000:' in s and "route show table \"$TABLE\"" in s
+assert 'DnsIpv6Experiment.run' in ui and 'DnsIpv6Experiment.recover' in ui
 assert 'supportsIpv6Nat(this)' in service and 'useIpv6 = false' in service
-assert 'dns-root-v052.sh' in rules # force updated script despite cached v0.3.0
-print('PASS: isolated IPv6 chain and automatic IPv4 fallback')
+assert 'dns-root-v052.sh' in rules
+print('PASS: scoped local-v6 TPROXY experiment and IPv4 fallback')

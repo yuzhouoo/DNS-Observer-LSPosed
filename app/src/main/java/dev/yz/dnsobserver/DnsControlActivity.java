@@ -34,6 +34,7 @@ public final class DnsControlActivity extends Activity {
     private TextView history;
     private LinearLayout speedResults;
     private volatile boolean measuring;
+    private volatile boolean ipv6ExperimentRunning;
     private CheckBox ipv6;
     private TextView status, ipv6ExperimentResult;
 
@@ -95,7 +96,7 @@ public final class DnsControlActivity extends Activity {
         LinearLayout root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(20),dp(16),dp(20),dp(24));scroll.addView(root);
         setContentView(scroll);
-        root.addView(label("DNS 接管 · v0.5.4",23,FG));
+        root.addView(label("DNS 接管 · v0.5.5",23,FG));
         root.addView(label("保留现有 LSPosed DNS 监控；接管仅作用于常规 UDP/TCP 53。\n需要 Root。默认关闭、不随系统开机启动。",13,SECOND));
         status=selectable(label("正在检查状态…",15,FG));root.addView(status);
         button("复制当前接管状态",root).setOnClickListener(v->copyVisibleText(status,"接管状态"));
@@ -119,22 +120,33 @@ public final class DnsControlActivity extends Activity {
         speedResults=new LinearLayout(this);speedResults.setOrientation(LinearLayout.VERTICAL);
         root.addView(speedResults);
         speedResults.addView(label("未开始测速；点击上方按钮查看每个 IP 的独立延迟。",13,SECOND));
-        root.addView(label("IPv6 TPROXY 实验（仅 ::1 回环、特殊端口 15453，不接管真实 DNS）：实验规则 20 秒自动清理，可随时一键恢复。",12,SECOND));
+        root.addView(label("IPv6 TPROXY 分阶段实验：UDP/TCP 回环 + 本机非回环保留文档地址，仅使用特殊端口 15453 / 15454。不接管真实 DNS，35 秒自动清理并核对残留。",12,SECOND));
         ipv6ExperimentResult=selectable(label(
                 prefs.getString("ipv6_last_report","IPv6 TPROXY 实验尚未运行。"),12,FG));
         root.addView(ipv6ExperimentResult);
         root.addView(label("实验日志可长按选择文本，也可点下面按钮一次复制完整原始输出。",12,SECOND));
         button("复制完整 IPv6 调试日志",root).setOnClickListener(v->copyVisibleText(ipv6ExperimentResult,"IPv6 调试日志"));
-        button("验证 IPv6 TPROXY · Root 透明 Socket 隔离实验",root).setOnClickListener(v ->
+        button("验证 IPv6 TPROXY · UDP/TCP + 本机出站实验",root).setOnClickListener(v ->
             new AlertDialog.Builder(this).setTitle("运行 IPv6 TPROXY 隔离实验？")
-                .setMessage("实验只临时匹配 IPv6 回环 ::1:15453，不修改 Android 路由、现有 fwmark、DNS 53 或系统规则。即使安装成功也不代表真实 DNS 已接管。20 秒超时清理，并提供手动恢复。")
+                .setMessage("两阶段实验：先测试 IPv6 回环 UDP/TCP；成功后使用 UID、2001:db8:ffff::53 文档地址及15453端口的严格条件进行临时 OUTPUT 标记及专用路由表实验。仅新增自身规则，不修改原有规则，不接管 DNS 53；35 秒超时清理，并提供手动恢复及残留检查。运行前请停止 DNS 接管。")
                 .setNegativeButton("取消",null)
-                .setPositiveButton("开始验证",(d,w)-> new Thread(()->{
-                    ui.post(()->{if(!isDestroyed())status.setText("正在安装 IPv6 隔离测试规则；上次调试日志仍可复制…");});
-                    final String result=DnsIpv6Experiment.run(this);
-                    prefs.edit().putString("ipv6_last_report",result).apply();
-                    ui.post(()->{if(!isDestroyed())ipv6ExperimentResult.setText(result);});
-                },"DNS-IPv6-experiment").start()).show());
+                .setPositiveButton("开始验证",(d,w)-> {
+                    if(ipv6ExperimentRunning){
+                        status.setText("已有 IPv6 实验正在运行，请勿重复提交");
+                        return;
+                    }
+                    ipv6ExperimentRunning=true;
+                    new Thread(()->{
+                        ui.post(()->{if(!isDestroyed())status.setText("IPv6 UDP/TCP 分阶段实验正在运行；上次日志仍可复制…");});
+                        String result;
+                        try{result=DnsIpv6Experiment.run(this);}
+                        catch(Throwable t){result="IPv6 实验意外终止："+t.getClass().getSimpleName()+" "+t.getMessage();}
+                        finally{ipv6ExperimentRunning=false;}
+                        final String complete=result;
+                        prefs.edit().putString("ipv6_last_report",complete).apply();
+                        ui.post(()->{if(!isDestroyed())ipv6ExperimentResult.setText(complete);});
+                    },"DNS-IPv6-experiment").start();
+                }).show());
         button("一键恢复 IPv6 实验规则",root).setOnClickListener(v ->
             new Thread(()->{
                 String outcome;

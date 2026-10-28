@@ -1,16 +1,18 @@
 from pathlib import Path
 root=Path(__file__).resolve().parents[1]
-p=(root/'app/src/main/java/dev/yz/dnsobserver/DnsIpv6Experiment.java').read_text()
-helper=(root/'app/src/main/java/dev/yz/dnsobserver/DnsIpv6RootProbe.java').read_text()
+e=(root/'app/src/main/java/dev/yz/dnsobserver/DnsIpv6Experiment.java').read_text()
+h=(root/'app/src/main/java/dev/yz/dnsobserver/DnsIpv6RootProbe.java').read_text()
 s=(root/'app/src/main/assets/dns-ipv6-tproxy-probe.sh').read_text()
-assert 'CLASSPATH=' in p and '/system/bin/app_process' in p
-assert 'DIRECT_OK' in p and 'TPROXY_OK' in p
-assert p.index('DIRECT_OK') < p.index('root(ctx,"install"')
-assert 'Os.setsockoptInt(fd,OsConstants.IPPROTO_IPV6,TRANSPARENT_IPV6,1)' in helper
-assert 'Os.geteuid()' in helper and 'ERROR errno=' in helper
-assert 'IPV6_TRANSPARENT Socket' not in p
-assert 'new DatagramSocket(null)' in p # sender only, never fallback receiver
-assert 'PREROUTING rule match:' in s and 'TPROXY target match:' in s
-assert 'ip -6 rule' not in s and 'route add' not in s
-assert '--dport 15453' in s and '--on-port 15454' in s
-print('PASS: root transparent socket, staged loopback test, scoped rollback')
+assert 'CLASSPATH=' in e and '/system/bin/app_process' in e
+assert 'Os.setsockoptInt(listen,OsConstants.IPPROTO_IPV6,IPV6_TRANSPARENT,1)' in h
+assert 'Os.geteuid()' in h and 'ERROR errno=' in h
+assert 'Os.accept(listen,new InetSocketAddress(0))' in h
+assert 'RECV_OK protocol=' in h
+assert 'new DatagramSocket(null)' in e # sending only, never fallback receiver
+assert 'install-loop' in e and 'install-local' in e
+assert e.index('"UDP","DIRECT"') < e.index('"install-loop"')
+assert e.index('loopUdp=single') < e.index('"install-local"')
+assert 'if(!clean || !loopUdp || !loopTcp)' in e
+assert 'finally{cleanup(ctx,report);}' in e
+assert 'VERIFY_CLEAN' in s and 'VERIFY_FAILED' in s
+print('PASS: TCP+UDP root socket and staged recovery')

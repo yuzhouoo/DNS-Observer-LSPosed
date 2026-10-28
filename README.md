@@ -1,3 +1,14 @@
+# DNS Observer v0.5.5 — IPv6 UDP/TCP 与本机出站隔离实验
+
+- 在 v0.5.4 的可复制日志基础上，分阶段执行 IPv6 透明 Socket **UDP 与 TCP** 检验，先直连 ::1，再经 mangle PREROUTING TPROXY 回环接收。
+- 两者均成功且检查已完全清理后，才测试本机发往文档保留地址 `2001:db8:ffff::53` 端口 15453 的 UDP/TCP 出站流量。只匹配 DNS Observer App UID、该单一 IPv6 地址和特殊端口；为该实验临时使用 `0x20000000/0x20000000` 标记、策略规则优先级 15000、专用路由表 19753（单一 /128 local route）。**此阶段会写入自己的临时 OUTPUT/PREROUTING/策略路由条目，和之前仅回环版本不同**。如检测到对应优先级/表被占用，拒绝实验。
+- 任何阶段均**不修改或删除现有 Android fwmark 规则、默认路由、普通 DNS 53 端口规则**，不触碰其他防火墙链，不禁用 IPv6，不启用开机接管。`2001:db8::/32` 为专用文档地址，不是公网 DNS 服务器；实验只验证内核路径，不能保证正式 DNS 接管。
+- 独立 Root watchdog 启动在临时规则之前，35 秒后尝试清理；App finally 与手动恢复均校验自己创建的 OUTPUT/PREROUTING 跳转、DO6TST55 链、专用规则和单地址路由是否还存在，不能核对干净时报告错误。
+- 对于 TCP 透明代理路径，只有收到完整带 nonce 的 payload 才算成功，不以单纯 `TCP SYN` 或规则计数作为成功。UDP 和 TCP 分开打印，单项失败均保留原始错误。
+- 这是**受控但实际会写入临时策略路由**的 Root 实验，手机可能受 ColorOS netd/SELinux/KernelSU 影响。请关闭已有 DNS 接管、确认手机具有其他恢复入口；不要同时运行多个实验。测试后复制完整报告。CI 只能覆盖构建、脚本模拟及静态验证，不能替代真机网络路径验证。
+
+---
+
 # DNS Observer v0.5.4 — 调试日志选中与完整复制
 
 - IPv6 TPROXY 实验报告 TextView 开启长按文本选择，并提供「复制完整 IPv6 调试日志」按钮（Android ClipboardManager）；复制当前视图的完整原文，包括 Root 错误、透明 Socket、数据包、命中计数和恢复状态。
