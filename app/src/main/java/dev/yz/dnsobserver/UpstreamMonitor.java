@@ -15,7 +15,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
-/** Measures IPv4/IPv6 x UDP/TCP independently; no firewall or DNS settings are changed. */
+/** Measures IPv4/IPv6 x ICMP Ping / UDP DNS / TCP DNS, without modifying network settings. */
 public final class UpstreamMonitor {
     private UpstreamMonitor() { }
     private static final int MAX_PER_FAMILY=12;
@@ -35,17 +35,23 @@ public final class UpstreamMonitor {
             for(DnsProbe.Sample s:samples)if(family.equals(s.family)&&protocol.equals(s.transport)) {
                 if(s.success){count++;best=Math.min(best,s.latencyMs);}else failed++;
             }
-            if(count>0)return best+" ms  ·  "+count+" 成功"+(failed>0?" / "+failed+" 失败":"");
+            if(count>0)return (best<0?"RTT 未获取":best+" ms")+"  ·  "+count+" 成功"+(failed>0?" / "+failed+" 失败":"");
             if(failed>0)return "不可用（"+failed+" IP 失败）";
             return "无"+family+"地址";
         }
         public String detail() {
             StringBuilder b=new StringBuilder();
+            String previous="";
             for(DnsProbe.Sample sample:samples) {
-                b.append(sample.family).append(' ').append(sample.ip).append(':').append(sample.port)
-                 .append(' ').append(sample.transport).append("  ")
-                 .append(sample.success?(sample.latencyMs+" ms"):"失败 · "+sample.error).append('\n');
+                if(!sample.ip.equals(previous)) {
+                    if(!previous.isEmpty()) b.append("诊断：").append(DnsDiagnosis.forAddress(samples,previous)).append("\n\n");
+                    previous=sample.ip;
+                    b.append("【").append(sample.family).append(" ").append(sample.ip).append("】\n");
+                }
+                b.append("  ").append("PING".equals(sample.transport)?"ICMP Ping":"DNS "+sample.transport)
+                 .append("  ").append(sample.success?(sample.latencyMs<0?"成功（RTT 未取得）":sample.latencyMs+" ms"):"失败 · "+sample.error).append('\n');
             }
+            if(!previous.isEmpty()) b.append("诊断：").append(DnsDiagnosis.forAddress(samples,previous)).append("\n");
             if(skipped4>0||skipped6>0)b.append("本次最多检测每种 IP 12 个；未测 IPv4 ")
                 .append(skipped4).append(" 个、IPv6 ").append(skipped6).append(" 个\n");
             return b.toString();
@@ -84,9 +90,10 @@ public final class UpstreamMonitor {
                 else if(n6++>=cap){result.skipped6++;continue;}
                 tested.add(addr);
             }
-            // Every IP gets separate UDP and TCP DNS questions with independent latency.
+            // Full scans test ICMP plus independent UDP/TCP DNS. Quick active-DNS checks omit ICMP.
             List<Callable<DnsProbe.Sample>> tasks=new ArrayList<>();
             for(InetAddress addr:tested){
+                if(!quick) tasks.add(()->DnsIcmpProbe.measure(addr));
                 tasks.add(()->DnsProbe.measure(addr,port,"UDP"));
                 tasks.add(()->DnsProbe.measure(addr,port,"TCP"));
             }
@@ -97,25 +104,30 @@ public final class UpstreamMonitor {
                     Future<DnsProbe.Sample> f=futures.get(i);
                     if(f.isCancelled()) {
                         // Time-bound results preserve the IP/protocol identity.
-                        InetAddress addr=tested.get(i/2);
-                        String proto=i%2==0?"UDP":"TCP";
-                        result.samples.add(new DnsProbe.Sample(addr,port,proto,false,MEASURE_DEADLINE_MS,-1,"本轮测速超时或取消"));
+                        int stride=quick?2:3;
+                        InetAddress addr=tested.get(i/stride);
+                        String proto=quick?(i%2==0?"UDP":"TCP"):(i%3==0?"PING":i%3==1?"UDP":"TCP");
+                        result.samples.add(new DnsProbe.Sample(addr,"PING".equals(proto)?0:port,
+                                proto,false,-1,-1,"本轮测速超时或取消"));
                     } else {
                         try{result.samples.add(f.get());}
                         catch(Exception e){
-                            InetAddress addr=tested.get(i/2);
-                            String proto=i%2==0?"UDP":"TCP";
-                            result.samples.add(new DnsProbe.Sample(addr,port,proto,false,0,-1,e.getClass().getSimpleName()));
+                            int stride=quick?2:3;
+                            InetAddress addr=tested.get(i/stride);
+                            String proto=quick?(i%2==0?"UDP":"TCP"):(i%3==0?"PING":i%3==1?"UDP":"TCP");
+                            result.samples.add(new DnsProbe.Sample(addr,"PING".equals(proto)?0:port,
+                                    proto,false,-1,-1,e.getClass().getSimpleName()));
                         }
                     }
                 }
             } finally {executor.shutdownNow();}
-            for(DnsProbe.Sample s:result.samples)if(s.success) {
+            // ICMP Ping success must not mark DNS upstream healthy.
+            for(DnsProbe.Sample s:result.samples)if(s.success && !"PING".equals(s.transport)) {
                 result.success=true;
                 if(result.latencyMs<0||s.latencyMs<result.latencyMs)result.latencyMs=s.latencyMs;
             }
             if(!result.success) {
-                result.error="无可用 DNS 响应（已分别测试 IPv4/IPv6 UDP/TCP；详见每 IP 失败原因）";
+                result.error="无可用 DNS 响应；ICMP Ping 成功不代表 DNS 服务可用（详见每 IP 诊断）";
             }
         } catch(InterruptedException e) {
             Thread.currentThread().interrupt();result.error="测速线程被中断";

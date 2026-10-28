@@ -1,3 +1,14 @@
+# DNS Observer v0.5.1 — ICMP Ping 与 DNS 服务延迟分离
+
+每组（主、从、备）的每个 IPv4/IPv6 地址分别测 ICMP Echo RTT、UDP DNS 查询、TCP DNS 查询。
+
+Ping 不回应不等于 IP 不可达：若 DNS 正常，说明地址可通过 DNS 服务访问；若 Ping 正常而 UDP/TCP DNS 均失败，优先排查 DNS 服务/端口/访问控制；若三项均失败，仍可能是 ICMP 与 DNS 同时被防火墙过滤，不能独断 IP 不通。
+
+本版复用原 upstream_probe 历史表保存 PING (port=0)，无需数据库版本迁移。手动和周期性全量测速会执行 Ping，运行接管时的 60 秒快速健康检查仍只测 UDP/TCP DNS；ICMP Ping 永远不参与 DNS 健康判断或主从备切换。
+
+Android /system/bin/ping 可能受设备权限或网络策略限制，失败时会明确标注原因。本版本只通过 CI 验证，尚无 OnePlus 12 实机结果。
+
+---
 # DNS Observer v0.5.0 — 三组上游 / 四通道 DNS 测速
 
 本版本在 v0.4.1 基础上增量扩展，保留 LSPosed Modern API 102 记录、Root 接管、应用名与系统 DNS 配置来源标注。

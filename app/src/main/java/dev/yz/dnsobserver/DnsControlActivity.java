@@ -84,8 +84,8 @@ public final class DnsControlActivity extends Activity {
         ipv6.setTextColor(FG);ipv6.setChecked(prefs.getBoolean("ipv6",false));
         root.addView(ipv6);
         root.addView(label("引导流程：优先系统 DNS 解析上游域名，失败时可使用备用纯 IP DNS。启用后只刷新上游地址，不修改系统 DNS 设置。",12,SECOND));
-        root.addView(label("四通道独立测速：IPv4 UDP · IPv4 TCP · IPv6 UDP · IPv6 TCP。\n每个解析出的 IP 单独发起真实 DNS 请求，测速不会自动切换主从备。",12,SECOND));
-        button("开始主 / 从 / 备四通道测速",root).setOnClickListener(v->testServer());
+        root.addView(label("每个 IP 独立测速：ICMP Ping、UDP DNS、TCP DNS（IPv4/IPv6 分开）。\nPing 无响应不能直接判定 IP 不通，DNS 服务单独验证。",12,SECOND));
+        button("开始主 / 从 / 备：Ping + UDP/TCP DNS 测速",root).setOnClickListener(v->testServer());
         speedResults=new LinearLayout(this);speedResults.setOrientation(LinearLayout.VERTICAL);
         root.addView(speedResults);
         speedResults.addView(label("未开始测速；点击上方按钮查看每个 IP 的独立延迟。",13,SECOND));
@@ -202,7 +202,7 @@ public final class DnsControlActivity extends Activity {
             persist();
         } catch(Exception e){status.setText("测速配置错误："+e.getMessage());return;}
         measuring=true;
-        status.setText("正在执行 IPv4/IPv6 × UDP/TCP 分项检测（最长约数十秒）…");
+        status.setText("正在进行 IPv4/IPv6：ICMP Ping、UDP DNS、TCP DNS 分项检测…");
         new Thread(()->{
             UpstreamMonitor.Result[] results=new UpstreamMonitor.Result[3];
             try {
@@ -218,14 +218,14 @@ public final class DnsControlActivity extends Activity {
                 measuring=false;
                 if(isFinishing()||isDestroyed())return;
                 renderSpeeds(domains,ports,results);
-                status.setText("三组四通道测速结束；详细结果及 IP 历史已保存");
+                status.setText("Ping / UDP DNS / TCP DNS 测速结束；详细诊断及历史已保存");
                 refreshHistory();
             });
         },"DNS-speed-test").start();
     }
     private TextView speedCell(String title,String value) {
-        TextView cell=label(title+"\n"+value,12,FG);
-        cell.setPadding(dp(7),dp(10),dp(5),dp(10));
+        TextView cell=label(title+"\n"+value,11,FG);
+        cell.setPadding(dp(5),dp(9),dp(4),dp(9));
         cell.setBackgroundColor(Color.rgb(24,39,58));
         return cell;
     }
@@ -248,8 +248,8 @@ public final class DnsControlActivity extends Activity {
                 LinearLayout columns=new LinearLayout(this);
                 LinearLayout.LayoutParams row=new LinearLayout.LayoutParams(-1,-2);row.topMargin=dp(5);
                 card.addView(columns,row);
-                for(String transport:new String[]{"UDP","TCP"}) {
-                    TextView cell=speedCell(family+" "+transport,r.summary(family,transport));
+                for(String transport:new String[]{"PING","UDP","TCP"}) {
+                    TextView cell=speedCell(family+" "+("PING".equals(transport)?"Ping":"DNS "+transport),r.summary(family,transport));
                     LinearLayout.LayoutParams cellLp=new LinearLayout.LayoutParams(0,-2,1);
                     cellLp.rightMargin=dp(3);
                     columns.addView(cell,cellLp);
@@ -258,12 +258,12 @@ public final class DnsControlActivity extends Activity {
             String details=r.detail();
             if(!r.error.isEmpty())card.addView(label("检测说明："+r.error,12,SECOND));
             if(!details.isEmpty()){
-                TextView expanded=label("查看每个 IP 的 TCP / UDP 明细（"+r.samples.size()+" 项）  ▾",12,SECOND);
+                TextView expanded=label("查看每个 IP 的 Ping / UDP DNS / TCP DNS 诊断（"+r.samples.size()+" 项）  ▾",12,SECOND);
                 card.addView(expanded);
                 expanded.setOnClickListener(new android.view.View.OnClickListener(){boolean open;
                     @Override public void onClick(android.view.View v) {
                         open=!open;
-                        expanded.setText(open?details:"查看每个 IP 的 TCP / UDP 明细（"+r.samples.size()+" 项）  ▾");
+                        expanded.setText(open?details:"查看每个 IP 的 Ping / UDP DNS / TCP DNS 诊断（"+r.samples.size()+" 项）  ▾");
                     }
                 });
             }
@@ -289,12 +289,15 @@ public final class DnsControlActivity extends Activity {
                      .append(item.host).append(" → ").append(item.ips.isEmpty()?"未知":item.ips)
                      .append(item.error.isEmpty()?"":" · "+item.error).append("\n\n");
                 }
-                b.append("— 最近逐 IP 四通道测速记录 —\n");
+                b.append("— 最近逐 IP：Ping / UDP DNS / TCP DNS —\n");
                 for(DnsDb.ProbeEntry entry:new DnsDb(this).latestProbes(80)) {
                     b.append(fmt.format(new java.util.Date(entry.ts))).append(' ').append(entry.role)
-                     .append(' ').append(entry.family).append(' ').append(entry.transport).append(' ')
-                     .append(entry.ip).append(':').append(entry.port).append("  ")
-                     .append(entry.success?(entry.latency+" ms"):("失败 · "+entry.error)).append('\n');
+                     .append(' ').append(entry.family).append(' ')
+                     .append("PING".equals(entry.transport)?"ICMP Ping":"DNS "+entry.transport).append(' ')
+                     .append(entry.ip);
+                    if(!"PING".equals(entry.transport)) b.append(':').append(entry.port);
+                    b.append("  ").append(entry.success?(entry.latency<0?"成功，RTT 未取得":entry.latency+" ms"):
+                            ("失败 · "+entry.error)).append('\n');
                 }
             } catch(Exception e){b.append("历史读取失败：").append(e.getClass().getSimpleName());}
             String value=b.length()==0?"暂无检测历史":b.toString();

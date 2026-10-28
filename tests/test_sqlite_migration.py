@@ -15,3 +15,8 @@ c.execute('CREATE TABLE upstream_probe (id INTEGER PRIMARY KEY AUTOINCREMENT,run
 c.execute("INSERT INTO upstream_probe(runTs,role,host,ip,family,transport,port,latency,success,rcode,error) VALUES(1,'主','dns.example','1.1.1.1','IPv4','TCP',31017,25,1,0,'')")
 assert c.execute('SELECT role,family,transport,latency FROM upstream_probe').fetchone()==('主','IPv4','TCP',25)
 print('Database migration 2->3 & per-IP probe records: PASS')
+
+# PING reuses the existing probe schema without destructive migration.
+c.execute("INSERT INTO upstream_probe(runTs,role,host,ip,family,transport,port,latency,success,rcode,error) VALUES(2,'主','dns.example','1.1.1.1','IPv4','PING',0,27,1,-1,'')")
+assert c.execute("SELECT transport,port,latency FROM upstream_probe WHERE runTs=2").fetchone()==('PING',0,27)
+print('ICMP Ping history uses existing v3 schema: PASS')
