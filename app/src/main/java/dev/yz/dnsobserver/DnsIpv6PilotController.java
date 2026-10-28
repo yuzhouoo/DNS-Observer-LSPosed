@@ -28,6 +28,9 @@ public final class DnsIpv6PilotController {
     private static java.lang.Process daemon;
     private static String token;
     private static boolean starting,ownsRules;
+    private static int probes;
+    private static final java.util.concurrent.atomic.AtomicInteger udpOk=new java.util.concurrent.atomic.AtomicInteger();
+    private static final java.util.concurrent.atomic.AtomicInteger tcpOk=new java.util.concurrent.atomic.AtomicInteger();
     private static final LinkedBlockingQueue<String> signals=new LinkedBlockingQueue<>();
     private DnsIpv6PilotController(){}
     private static final class Endpoint {
@@ -39,8 +42,14 @@ public final class DnsIpv6PilotController {
         synchronized(DnsIpv6PilotController.class){
             String old=prefs.getString("ipv6_pilot_log","");
             String newer=(old+line+"\n");
-            if(newer.length()>18000)newer=newer.substring(newer.length()-18000);
+            if(newer.length()>10000)newer="[较早日志已自动折叠]\n"+newer.substring(newer.length()-9500);
             prefs.edit().putString("ipv6_pilot_log",newer).apply();
+        }
+    }
+    public static void clearLog(Context ctx) {
+        synchronized(DnsIpv6PilotController.class) {
+            ctx.getSharedPreferences(DnsForwardService.PREFS,Context.MODE_PRIVATE)
+                .edit().remove("ipv6_pilot_log").commit();
         }
     }
     public static boolean isRunning(){synchronized(LOCK){return starting||(daemon!=null&&daemon.isAlive());}}
@@ -91,7 +100,10 @@ public final class DnsIpv6PilotController {
             try(BufferedReader br=new BufferedReader(new InputStreamReader(process.getInputStream(),StandardCharsets.UTF_8))){
                 String line;
                 while((line=br.readLine())!=null){
-                    log(ctx,line.length()>400?line.substring(0,400):line);
+                    // Per-query successes are aggregated, not appended endlessly.
+                    if(line.startsWith("DNS6PILOT UDP_OK"))udpOk.incrementAndGet();
+                    else if(line.startsWith("DNS6PILOT TCP_OK"))tcpOk.incrementAndGet();
+                    else log(ctx,line.length()>400?line.substring(0,400):line);
                     if(line.startsWith("DNS6PILOT READY")||line.startsWith("DNS6PILOT ERROR"))signals.offer(line);
                 }
             }catch(Exception e){log(ctx,"Root 输出流结束："+e.getClass().getSimpleName());}
@@ -132,10 +144,11 @@ public final class DnsIpv6PilotController {
         synchronized(LOCK){
             if(starting||(daemon!=null&&daemon.isAlive()))return "安全试运行已经启动或正在启动";
             starting=true;signals.clear();
+            probes=0;udpOk.set(0);tcpOk.set(0);
             token=UUID.randomUUID().toString().replace("-","");
             app.getSharedPreferences(DnsForwardService.PREFS,Context.MODE_PRIVATE).edit()
                     .putString("ipv6_pilot_log","").apply();
-            log(app,"v0.6.0-beta1：IPv4 接管保持原状；仅本 App UID → "+TARGET+":53；最多 145 秒，180 秒看门狗");
+            log(app,"v0.6.0-beta2：IPv4 接管保持原状；仅本 App UID → "+TARGET+":53；最多 145 秒，180 秒看门狗");
             boolean installAttempted=false;
             try {
                 List<Endpoint> endpoints=preflight(app);
@@ -147,7 +160,7 @@ public final class DnsIpv6PilotController {
                 log(app,DnsIpv6Experiment.root(app,"install-pilot",token,12));
                 ownsRules=true;
                 boolean udp=probe("UDP"),tcp=probe("TCP");
-                log(app,"启动自检：UDP="+udp+" TCP="+tcp);
+                probes++;log(app,"启动自检：UDP="+udp+" TCP="+tcp);
                 if(!udp||!tcp)throw new IllegalStateException("首次 UDP/TCP DNS 应答校验失败，已退出并恢复");
                 final java.lang.Process monitored=daemon;
                 Thread cleanup=new Thread(()->{
@@ -182,7 +195,7 @@ public final class DnsIpv6PilotController {
             if(starting||daemon==null||!daemon.isAlive())return "没有运行中的 IPv6 试运行服务";
             try{
                 boolean udp=probe("UDP"),tcp=probe("TCP");
-                String result="持续自检 UDP="+udp+" TCP="+tcp;
+                probes++;String result="第"+probes+"轮自检 UDP="+udp+" TCP="+tcp;
                 log(ctx,result);
                 if(!udp||!tcp) {
                     log(ctx,"发现 DNS 响应异常，立即恢复实验规则");
@@ -192,6 +205,40 @@ public final class DnsIpv6PilotController {
             }catch(Exception e){log(ctx,"自检错误："+e.getMessage());stop(ctx);return "自检失败，已触发恢复："+e.getMessage();}
         }
     }
+
+    /** Finite concurrency probe against the RUNNING pilot, without changing rule scope. */
+    public static String stress(Context ctx) {
+        synchronized(LOCK) {
+            if(starting||daemon==null||!daemon.isAlive())return "未运行 IPv6 试运行，不能压力自检";
+        }
+        java.util.concurrent.ExecutorService pool=java.util.concurrent.Executors.newFixedThreadPool(4);
+        java.util.List<java.util.concurrent.Future<Boolean>> futures=new java.util.ArrayList<>();
+        long begin=android.os.SystemClock.elapsedRealtime();
+        long deadline=begin+16000L;
+        try {
+            for(int i=0;i<12;i++) {
+                final String transport=(i%2==0)?"UDP":"TCP";
+                futures.add(pool.submit(()->probe(transport)));
+            }
+            int success=0,errors=0;
+            for(java.util.concurrent.Future<Boolean> future:futures) {
+                try {
+                    long left=deadline-android.os.SystemClock.elapsedRealtime();
+                    if(left<=0) {errors++;continue;}
+                    if(Boolean.TRUE.equals(future.get(left,TimeUnit.MILLISECONDS)))success++;
+                    else errors++;
+                }catch(Exception ex){errors++;}
+            }
+            String summary="并发自检：成功 "+success+"/12，失败 "+errors+
+                    "，耗时 "+(android.os.SystemClock.elapsedRealtime()-begin)+"ms";
+            log(ctx,summary);
+            // Pressure tests never independently alter firewall/routing rules.
+            return summary;
+        }finally {
+            for(java.util.concurrent.Future<Boolean> future:futures)future.cancel(true);
+            pool.shutdownNow();
+        }
+    }
     public static String stop(Context ctx){
         synchronized(LOCK){
             if(daemon!=null){daemon.destroy();daemon.destroyForcibly();daemon=null;}
@@ -199,6 +246,7 @@ public final class DnsIpv6PilotController {
             String result;
             try{result=DnsIpv6Experiment.recover(ctx);ownsRules=false;}
             catch(Exception e){result="RECOVERY_FAILED: "+e.getMessage();}
+            log(ctx,"累计自检 "+probes+" 轮，代理 UDP_OK="+udpOk.get()+" TCP_OK="+tcpOk.get());
             log(ctx,"手动停止："+result);
             return result;
         }

@@ -25,5 +25,5 @@ assert 'DnsIpv6Experiment.recover(app)' in control and 'DnsIpv6Experiment.recove
 assert 'DnsIpv6PilotController.start' in ui and 'DnsIpv6PilotController.stop' in ui
 assert 'DnsIpv6PilotController.test' in ui and 'DnsIpv6PilotController.isRunning()' in ui
 assert '复制完整 IPv6 试运行日志' in ui
-assert 'v0.6.0-beta1' in ui
+assert 'v0.6.0-beta2' in ui
 print('PASS: opt-in restricted IPv6 multi-query Root pilot, auto-recovery and UI wiring')

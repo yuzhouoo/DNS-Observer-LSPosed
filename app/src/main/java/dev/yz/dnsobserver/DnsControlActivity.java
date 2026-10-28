@@ -11,7 +11,6 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.widget.Button;
-import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -34,9 +33,10 @@ public final class DnsControlActivity extends Activity {
     private TextView history;
     private LinearLayout speedResults;
     private volatile boolean measuring;
-    private volatile boolean ipv6ExperimentRunning;
-    private CheckBox ipv6;
-    private TextView status, ipv6ExperimentResult, ipv6PilotLog;
+    private TextView status, ipv6PilotLog;
+    private Button speedHistoryToggle;
+    private boolean historyExpanded;
+
 
     /** Text selection works with long press; the button copies the complete current result. */
     private TextView selectable(TextView view) {
@@ -56,11 +56,38 @@ public final class DnsControlActivity extends Activity {
         clipboard.setPrimaryClip(ClipData.newPlainText(title,view.getText().toString()));
         Toast.makeText(this,"已复制完整"+title,Toast.LENGTH_SHORT).show();
     }
-    private void showExperimentLog(String result) {
-        if(result==null)return;
-        prefs.edit().putString("ipv6_last_report",result).apply();
-        ipv6ExperimentResult.setText(result);
+    private String pilotLog() { return DnsIpv6PilotController.report(this); }
+    /** Keep the main page short; complete log is still in private preferences until cleared. */
+    private void refreshPilotPreview() {
+        if(ipv6PilotLog==null)return;
+        String full=pilotLog();
+        String[] lines=full.split("\n");
+        StringBuilder tail=new StringBuilder();
+        int first=Math.max(0,lines.length-6);
+        if(first>0)tail.append("已折叠 ").append(first).append(" 行历史日志；点击查看完整内容。\n");
+        for(int i=first;i<lines.length;i++)if(!lines[i].isEmpty())tail.append(lines[i]).append('\n');
+        ipv6PilotLog.setText(tail.length()==0?"暂无试运行日志":tail.toString().trim());
     }
+    private void showCompletePilotLog() {
+        String report=pilotLog();
+        ScrollView scroll=new ScrollView(this);
+        TextView full=selectable(label(report,12,FG));
+        full.setPadding(dp(14),dp(12),dp(14),dp(12));
+        scroll.addView(full);
+        new AlertDialog.Builder(this).setTitle("IPv6 试运行 · 完整日志")
+            .setView(scroll).setNeutralButton("复制全部",(d,w)->copyText(report,"IPv6 试运行日志"))
+            .setPositiveButton("关闭",null).show();
+    }
+    private void copyText(String value,String title) {
+        if(value==null||value.isEmpty()){
+            Toast.makeText(this,"暂无可复制的日志",Toast.LENGTH_SHORT).show();return;
+        }
+        ClipboardManager clip=(ClipboardManager)getSystemService(CLIPBOARD_SERVICE);
+        if(clip==null){Toast.makeText(this,"无法访问剪贴板",Toast.LENGTH_SHORT).show();return;}
+        clip.setPrimaryClip(ClipData.newPlainText(title,value));
+        Toast.makeText(this,"已复制完整"+title,Toast.LENGTH_SHORT).show();
+    }
+
     private SharedPreferences prefs;
     private boolean visible;
 
@@ -96,7 +123,7 @@ public final class DnsControlActivity extends Activity {
         LinearLayout root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(20),dp(16),dp(20),dp(24));scroll.addView(root);
         setContentView(scroll);
-        root.addView(label("DNS 接管 · v0.6.0-beta1",23,FG));
+        root.addView(label("DNS 接管 · v0.6.0-beta2",23,FG));
         root.addView(label("保留现有 LSPosed DNS 监控；接管仅作用于常规 UDP/TCP 53。\n需要 Root。默认关闭、不随系统开机启动。",13,SECOND));
         status=selectable(label("正在检查状态…",15,FG));root.addView(status);
         button("复制当前接管状态",root).setOnClickListener(v->copyVisibleText(status,"接管状态"));
@@ -110,89 +137,65 @@ public final class DnsControlActivity extends Activity {
         secondaryPort=field(root,"备 DNS 端口",prefs.getString("secondary_port","31017"));
         secondaryPort.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
         bootstrap=field(root,"Bootstrap DNS 纯 IP（域名刷新使用，可留空）",prefs.getString("bootstrap",""));
-        ipv6=new CheckBox(this);ipv6.setText("旧版 IPv6 NAT 重定向（本机内核不可用；与下方 TPROXY 试运行无关）");
-        ipv6.setTextColor(FG);ipv6.setChecked(prefs.getBoolean("ipv6",false));
-        root.addView(ipv6);
-        root.addView(label("兼容性：IPv6 ip6tables NAT 不可用时，启动接管会明确降级为 IPv4-only，不影响独立 IPv6 测速。IPv6 TPROXY 需单独验证。",12,SECOND));
-        root.addView(label("引导流程：优先系统 DNS 解析上游域名，失败时可使用备用纯 IP DNS。启用后只刷新上游地址，不修改系统 DNS 设置。",12,SECOND));
-        root.addView(label("每个 IP 独立测速：ICMP Ping、UDP DNS、TCP DNS（IPv4/IPv6 分开）。\nPing 无响应不能直接判定 IP 不通，DNS 服务单独验证。",12,SECOND));
+        root.addView(label("IPv4 DNS 接管与 IPv6 TPROXY 试运行相互独立；当前设备 IPv6 NAT 不可用，已移除旧版 NAT 开关。",12,SECOND));
+        root.addView(label("主/从/备上游独立测速：IPv4 / IPv6 · Ping / UDP / TCP；Bootstrap 只用于上游引导解析。",12,SECOND));
         button("开始主 / 从 / 备：Ping + UDP/TCP DNS 测速",root).setOnClickListener(v->testServer());
         speedResults=new LinearLayout(this);speedResults.setOrientation(LinearLayout.VERTICAL);
         root.addView(speedResults);
         speedResults.addView(label("未开始测速；点击上方按钮查看每个 IP 的独立延迟。",13,SECOND));
-        root.addView(label("IPv6 TPROXY 分阶段实验：回环、DNS53 捕获、离线 SERVFAIL 回包；全部通过后，预先解析并测速已配置的主/从/备 DNS，单次转发真实 DNS 请求并验证回包。仅本 App UID、文档 IPv6 地址；35 秒守护清理。",12,SECOND));
-        ipv6ExperimentResult=selectable(label(
-                prefs.getString("ipv6_last_report","IPv6 TPROXY 实验尚未运行。"),12,FG));
-        root.addView(ipv6ExperimentResult);
-        root.addView(label("实验日志可长按选择文本，也可点下面按钮一次复制完整原始输出。",12,SECOND));
-        button("复制完整 IPv6 调试日志",root).setOnClickListener(v->copyVisibleText(ipv6ExperimentResult,"IPv6 调试日志"));
-        button("验证 IPv6 TPROXY · 离线回包及真实上游 DNS",root).setOnClickListener(v ->
-            new AlertDialog.Builder(this).setTitle("运行 IPv6 TPROXY 隔离实验？")
-                .setMessage("先完成原有回环、DNS53 捕获和离线应答实验；都通过后，在安装规则前检测已保存的主/从/备 DNS 服务器可用性，再用明确 IP/端口实际转发一次 UDP/TCP DNS 查询。只匹配本 App UID 与测试文档 IPv6 地址，不修改其他应用的 DNS；35 秒自动恢复。运行前请停止 DNS 接管。")
-                .setNegativeButton("取消",null)
-                .setPositiveButton("开始验证",(d,w)-> {
-                    if(DnsIpv6PilotController.isRunning()){
-                        status.setText("请先停止 v0.6.0 IPv6 试运行，再执行一次性验证");return;
-                    }
-                    if(ipv6ExperimentRunning){
-                        status.setText("已有 IPv6 实验正在运行，请勿重复提交");
-                        return;
-                    }
-                    ipv6ExperimentRunning=true;
-                    new Thread(()->{
-                        ui.post(()->{if(!isDestroyed())status.setText("IPv6 UDP/TCP 分阶段实验正在运行；上次日志仍可复制…");});
-                        String result;
-                        try{result=DnsIpv6Experiment.run(this);}
-                        catch(Throwable t){result="IPv6 实验意外终止："+t.getClass().getSimpleName()+" "+t.getMessage();}
-                        finally{ipv6ExperimentRunning=false;}
-                        final String complete=result;
-                        prefs.edit().putString("ipv6_last_report",complete).apply();
-                        ui.post(()->{if(!isDestroyed())ipv6ExperimentResult.setText(complete);});
-                    },"DNS-IPv6-experiment").start();
-                }).show());
-        button("一键恢复 IPv6 实验规则",root).setOnClickListener(v ->
-            new Thread(()->{
-                String outcome;
-                try{outcome=DnsIpv6Experiment.recover(this);}
-                catch(Exception e){outcome="实验规则恢复失败："+e.getMessage();}
-                final String reply=outcome;
-                ui.post(()->{
-                    if(isDestroyed())return;
-                    // Preserve the diagnostic details instead of replacing them with recovery output.
-                    String existing=prefs.getString("ipv6_last_report","");
-                    String combined=(existing.isEmpty()?"":existing+"\n\n")+"【手动恢复】\n"+reply;
-                    showExperimentLog(combined);
-                });
-            },"DNS-IPv6-recover").start());
-        root.addView(label("IPv6 TPROXY 安全试运行（v0.6.0-beta1）",18,FG));
+        root.addView(label("IPv6 TPROXY 限时试运行（beta2）",18,FG));
         root.addView(label("仅 DNS Observer 本身 UID → 2001:db8:ffff::53:53 的查询。不劫持系统或其他 App。手动启动后可反复测试 UDP/TCP；Root 服务最长 145 秒，180 秒独立规则看门狗。可与原 IPv4 接管独立使用。",12,SECOND));
-        ipv6PilotLog=selectable(label(DnsIpv6PilotController.report(this),12,FG));
+        ipv6PilotLog=selectable(label("",12,FG));
         root.addView(ipv6PilotLog);
+        refreshPilotPreview();
+        button("查看完整 IPv6 试运行日志",root).setOnClickListener(v->showCompletePilotLog());
+        button("复制完整 IPv6 试运行日志",root).setOnClickListener(v->copyText(pilotLog(),"IPv6 试运行日志"));
+        button("清空 IPv6 试运行日志",root).setOnClickListener(v->
+            new AlertDialog.Builder(this).setTitle("清空已保存的试运行日志？")
+                .setMessage("仅清除日志文字；不停止运行中的服务，不修改防火墙规则，也不清除 DNS 监控数据库。运行期间新消息仍会继续记录。")
+                .setNegativeButton("取消",null)
+                .setPositiveButton("清空",(d,w)->{
+                    DnsIpv6PilotController.clearLog(this);
+                    prefs.edit().remove("ipv6_last_report").apply();
+                    refreshPilotPreview();
+                    Toast.makeText(this,"日志已清空",Toast.LENGTH_SHORT).show();
+                }).show());
         button("启动限时 IPv6 DNS 试运行",root).setOnClickListener(v->
             new AlertDialog.Builder(this).setTitle("确认启动受限 IPv6 TPROXY 试运行？")
                 .setMessage("仅本 App UID 到文档 IPv6 地址/53；预检主从备上游后启动 Root UDP/TCP 代理。最长 145 秒，180 秒防护恢复，不能代表全机接管。")
                 .setNegativeButton("取消",null).setPositiveButton("开始",(d,w)->{
-                    if(ipv6ExperimentRunning){status.setText("正在执行一次性 IPv6 实验，请先结束");return;}
                     persist();
                     new Thread(()->{
                         String result=DnsIpv6PilotController.start(getApplicationContext());
-                        ui.post(()->{if(!isDestroyed()){status.setText(result);ipv6PilotLog.setText(DnsIpv6PilotController.report(this));}});
+                        ui.post(()->{if(!isDestroyed()){status.setText(result);refreshPilotPreview();}});
                     },"DNS-Pilot-start").start();
                 }).show());
         button("IPv6 试运行：再次查询 UDP/TCP",root).setOnClickListener(v->new Thread(()->{
             String result=DnsIpv6PilotController.test(getApplicationContext());
-            ui.post(()->{if(!isDestroyed()){status.setText(result);ipv6PilotLog.setText(DnsIpv6PilotController.report(this));}});
+            ui.post(()->{if(!isDestroyed()){status.setText(result);refreshPilotPreview();}});
         },"DNS-Pilot-test").start());
         button("停止 IPv6 试运行并核查恢复",root).setOnClickListener(v->new Thread(()->{
             String result=DnsIpv6PilotController.stop(getApplicationContext());
-            ui.post(()->{if(!isDestroyed()){status.setText(result);ipv6PilotLog.setText(DnsIpv6PilotController.report(this));}});
+            ui.post(()->{if(!isDestroyed()){status.setText(result);refreshPilotPreview();}});
         },"DNS-Pilot-stop").start());
-        button("刷新 / 查看 IPv6 试运行日志",root).setOnClickListener(v->
-                ipv6PilotLog.setText(DnsIpv6PilotController.report(this)));
-        button("复制完整 IPv6 试运行日志",root).setOnClickListener(v->{
-            ipv6PilotLog.setText(DnsIpv6PilotController.report(this));
-            copyVisibleText(ipv6PilotLog,"IPv6 试运行日志");
-        });
+        button("刷新试运行状态",root).setOnClickListener(v->refreshPilotPreview());
+        button("IPv6 试运行 · 12 次并发请求压力自检",root).setOnClickListener(v->
+            new Thread(()->{
+                String result=DnsIpv6PilotController.stress(getApplicationContext());
+                ui.post(()->{if(!isDestroyed()){status.setText(result);refreshPilotPreview();}});
+            },"DNS-Pilot-stress").start());
+        button("紧急核查 / 恢复 IPv6 临时规则",root).setOnClickListener(v->
+            new Thread(()->{
+                String result;
+                if(DnsIpv6PilotController.isRunning()){
+                    result=DnsIpv6PilotController.stop(getApplicationContext());
+                }else {
+                    try{result=DnsIpv6Experiment.recover(getApplicationContext());}
+                    catch(Exception ex){result="恢复失败："+ex.getMessage();}
+                }
+                final String message=result;
+                ui.post(()->{if(!isDestroyed()){status.setText(message);refreshPilotPreview();}});
+            },"DNS-IPv6-emergency").start());
         button("启动 DNS 接管",root).setOnClickListener(v->new AlertDialog.Builder(this)
                 .setTitle("启用 Root DNS 接管？")
                 .setMessage("将重定向本机普通 UDP/TCP 53 请求。请确认你可以使用 KernelSU 或 Root 命令恢复网络。首次使用请关闭其它 DNS 重定向规则。")
@@ -216,9 +219,15 @@ public final class DnsControlActivity extends Activity {
         },"DNS-emergency").start();
         });
         root.addView(label("健康监测 · 每约 15 分钟在未接管时由系统调度，接管时每 60 秒测延时、每 5 分钟尝试刷新 IP。实际触发可能受系统省电影响；接管期间若未配置 Bootstrap 纯 IP，只监测已缓存地址。",12,SECOND));
-        button("重新测速并保存全部 IP / 协议历史",root).setOnClickListener(v->testServer());
-        root.addView(label("主从备测速 / IP 历史",17,FG));
-        history=selectable(label("正在加载历史…",12,SECOND));root.addView(history);
+        speedHistoryToggle=button("展开最近测速历史",root);
+        history=selectable(label("正在加载历史…",12,SECOND));
+        history.setVisibility(View.GONE);root.addView(history);
+        speedHistoryToggle.setOnClickListener(v->{
+            historyExpanded=!historyExpanded;
+            history.setVisibility(historyExpanded?View.VISIBLE:View.GONE);
+            speedHistoryToggle.setText(historyExpanded?"收起测速历史":"展开最近测速历史");
+            if(historyExpanded)refreshHistory();
+        });
         button("复制当前 DNS 测速历史",root).setOnClickListener(v->copyVisibleText(history,"DNS 测速历史"));
         root.addView(label("安全说明：本模块只清理 DOBSR53 专属防火墙链，不清空系统规则。单独的 Root 监视脚本会在应用进程消失时尝试回滚；无法保证所有 ROM / Root 实现上的绝对自动恢复。",12,SECOND));
     }
@@ -230,7 +239,7 @@ public final class DnsControlActivity extends Activity {
                 .putString("sub_port",subPort.getText().toString().trim())
                 .putString("secondary_host",secondaryHost.getText().toString().trim())
                 .putString("secondary_port",secondaryPort.getText().toString().trim())
-                .putBoolean("ipv6",ipv6.isChecked()).apply();
+                .putBoolean("ipv6",false).apply();
     }
     private int checkedPort() {
         String s=port.getText().toString().trim();
@@ -276,7 +285,7 @@ public final class DnsControlActivity extends Activity {
             String hostname=checkedHost();int number=checkedPort();persist();
             Intent i=new Intent(this,DnsForwardService.class).setAction(DnsForwardService.ACTION_START);
             i.putExtra("host",hostname);i.putExtra("port",number);
-            i.putExtra("bootstrap",bootstrap.getText().toString().trim());i.putExtra("ipv6",ipv6.isChecked());
+            i.putExtra("bootstrap",bootstrap.getText().toString().trim());i.putExtra("ipv6",false);
             i.putExtra("sub_host",subHost.getText().toString().trim());
             i.putExtra("sub_port",subHost.getText().toString().trim().isEmpty()?31017:checkedExtraPort(subPort,"从 DNS"));
             i.putExtra("secondary_host",secondaryHost.getText().toString().trim());
@@ -383,7 +392,7 @@ public final class DnsControlActivity extends Activity {
             StringBuilder b=new StringBuilder();
             java.text.SimpleDateFormat fmt=new java.text.SimpleDateFormat("MM-dd HH:mm",java.util.Locale.getDefault());
             try {
-                java.util.List<DnsDb.UpstreamEntry> checks=new DnsDb(this).latestUpstream(35);
+                java.util.List<DnsDb.UpstreamEntry> checks=new DnsDb(this).latestUpstream(12);
                 for(int i=0;i<checks.size();i++) {
                     DnsDb.UpstreamEntry item=checks.get(i);
                     boolean changed=false;
@@ -398,7 +407,7 @@ public final class DnsControlActivity extends Activity {
                      .append(item.error.isEmpty()?"":" · "+item.error).append("\n\n");
                 }
                 b.append("— 最近逐 IP：Ping / UDP DNS / TCP DNS —\n");
-                for(DnsDb.ProbeEntry entry:new DnsDb(this).latestProbes(80)) {
+                for(DnsDb.ProbeEntry entry:new DnsDb(this).latestProbes(18)) {
                     b.append(fmt.format(new java.util.Date(entry.ts))).append(' ').append(entry.role)
                      .append(' ').append(entry.family).append(' ')
                      .append("PING".equals(entry.transport)?"ICMP Ping":"DNS "+entry.transport).append(' ')
@@ -421,9 +430,10 @@ public final class DnsControlActivity extends Activity {
         if(at>0 && System.currentTimeMillis()-at<20000) {
             status.setText((p.getBoolean("running",false)?"● 正在接管：":"○ 未接管：")+p.getString("status",""));
         }
-        if(history!=null && System.currentTimeMillis()-historyUpdated>15000) {
+        if(historyExpanded && history!=null && System.currentTimeMillis()-historyUpdated>15000) {
             historyUpdated=System.currentTimeMillis();refreshHistory();
         }
+        refreshPilotPreview();
         ui.postDelayed(this,3500);
     }};
     @Override protected void onResume(){super.onResume();visible=true;ui.removeCallbacks(refresh);ui.postDelayed(refresh,1200);}
