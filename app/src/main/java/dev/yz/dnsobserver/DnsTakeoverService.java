@@ -25,6 +25,8 @@ public final class DnsTakeoverService extends Service {
     private volatile boolean stopped=true, monitoring;
     private volatile boolean expect4,expect6;
     private boolean fault4,fault6;
+    // No retry of a session that never passed IPv6 startup and rule verification.
+    private boolean ipv6EverActive,ipv6RepairBlocked;
     private static final Object EVENTS_LOCK=new Object();
 
     public static void event(Context ctx,String message) {
@@ -107,6 +109,8 @@ public final class DnsTakeoverService extends Service {
         SharedPreferences p=prefs();
         expect4=p.getBoolean("takeover_ipv4",true);
         expect6=p.getBoolean("takeover_ipv6",false);
+        fault4=false;fault6=false;
+        ipv6EverActive=false;ipv6RepairBlocked=false;
         if(!expect4 && !expect6){status("没有勾选 IPv4/IPv6，未启动");stopSelf();return;}
         if(stopped || !p.getBoolean("takeover_enabled",false)){stopAll();return;}
         try {
@@ -122,9 +126,16 @@ public final class DnsTakeoverService extends Service {
             if(expect6){
                 String result=DnsIpv6GlobalController.start(this);
                 status("IPv6："+result);
+                if(result.startsWith("IPv6 DNS53 已启用") && DnsIpv6GlobalController.active(this)){
+                    ipv6EverActive=true;
+                }else{
+                    // A failed initial install is NOT a system takeover and must not
+                    // trigger an endless 15-second reinstall/bind-conflict loop.
+                    ipv6RepairBlocked=true;
+                    status("IPv6 首次启动未成功：暂停本次会话的自动修复。请关闭接管并检查保留路由/监听端口。");
+                }
             }else{
-                status("IPv6 未勾选；清理现有 TPROXY 规则");
-                DnsIpv6GlobalController.stop(this);
+                status("IPv6 未勾选；本次不启动 IPv6 代理");
             }
             status("接管任务已按勾选协议提交；无自动到期关闭");
         }catch(Exception ex){status("启动失败："+ex.getClass().getSimpleName()+" "+ex.getMessage());}
@@ -150,17 +161,27 @@ public final class DnsTakeoverService extends Service {
                 }else fault4=false;
             }
             if(stopped)break;
-            if(expect6){
+            if(expect6 && ipv6EverActive && !ipv6RepairBlocked){
                 boolean active=DnsIpv6GlobalController.active(this);
                 if(!active){
-                    if(!fault6){status("DETECT: IPv6 DNS 接管规则被覆盖或 Root 代理退出");fault6=true;}
+                    if(!fault6){status("DETECT: IPv6 曾正常运行，现检测到规则缺失或 Root 代理退出");fault6=true;}
                     if(heal){
+                        // One attempt per fault episode. Failed repair is latched,
+                        // never retry indefinitely while a port or route is occupied.
+                        ipv6RepairBlocked=true;
                         try{
-                            String stoppedResult=DnsIpv6GlobalController.stop(this);
-                            status("IPv6 覆盖修复：先清理自身旧规则 · "+stoppedResult);
-                            String result=DnsIpv6GlobalController.start(this);
-                            status("REPAIR: IPv6 "+result);
-                        }catch(Exception ex){status("REPAIR_FAIL IPv6: "+ex.getMessage());}
+                            String old=DnsIpv6GlobalController.stop(this);
+                            status("IPv6 修复前清理："+old);
+                            if(!old.contains("VERIFY_CLEAN")){
+                                status("REPAIR_PAUSED IPv6: 自身规则清理未确认；禁止重试");
+                            }else if(!stopped && prefs().getBoolean("takeover_enabled",false)){
+                                String result=DnsIpv6GlobalController.start(this);
+                                if(result.startsWith("IPv6 DNS53 已启用") && DnsIpv6GlobalController.active(this)){
+                                    fault6=false;ipv6RepairBlocked=false;
+                                    status("REPAIR_OK IPv6: 服务及规则已恢复");
+                                }else status("REPAIR_PAUSED IPv6: "+result+"；本次会话停止重复修复");
+                            }
+                        }catch(Exception ex){status("REPAIR_PAUSED IPv6: "+ex.getMessage());}
                     }
                 }else fault6=false;
             }
@@ -168,6 +189,7 @@ public final class DnsTakeoverService extends Service {
     }
     private void stopAll(){
         stopped=true;expect4=false;expect6=false;
+        ipv6EverActive=false;ipv6RepairBlocked=true;
         StringBuilder b=new StringBuilder("关闭接管：");
         try{startService(new Intent(this,DnsForwardService.class).setAction(DnsForwardService.ACTION_STOP));
             b.append(" IPv4 服务停止请求已发出；");}catch(Exception ex){b.append(" IPv4 服务停止请求失败：").append(ex.getMessage());}

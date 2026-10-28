@@ -2,11 +2,11 @@
 # DNS Observer IPv6 global unicast DNS53 trial (explicit opt-in only).
 # Dedicated chain, mark, route table and watchdog; do not touch existing Android rules.
 set -u
-MODE="${1:-}"; APP_UID="${2:-}"; TOKEN="${3:-}"; OWNER_PID="${4:-}"
+MODE="${1:-}"; APP_UID="${2:-}"; TOKEN="${3:-}"; OWNER_PID="${4:-}"; TARGET_PID="${5:-}"
 CHAIN=DO6G061; TABLE=19754; PREF=15010
 MARK=0x40000000/0x40000000; PROXY=15456
 MARKER="/data/local/tmp/dobs6g61_${APP_UID}.run"
-case "$MODE" in install-probe|promote|recover|status|check|watch) ;; *) exit 2;; esac
+case "$MODE" in install-probe|promote|recover|status|check|watch|stop-process) ;; *) exit 2;; esac
 case "$APP_UID" in ''|*[!0-9]*) exit 2;; esac
 case "$TOKEN" in ''|*[!a-zA-Z0-9_-]*) exit 2;; esac
 IP6="$(command -v ip6tables 2>/dev/null || true)"
@@ -71,6 +71,31 @@ verify_clean() {
     echo 'VERIFY_FAILED: global module residue; manual cleanup required' >&2; return 1
 }
 case "$MODE" in
+ stop-process)
+    case "$TARGET_PID" in ''|*[!0-9]*) echo 'PROCESS_STOP_REFUSED: invalid PID' >&2; exit 13;; esac
+    [ "$TARGET_PID" -gt 1 ] || { echo 'PROCESS_STOP_REFUSED: protected PID' >&2; exit 13; }
+    # This process may be unrelated. Require this exact app session token
+    # in its command line; never use pkill -f or kill an unverified PID.
+    if [ ! -r "/proc/$TARGET_PID/cmdline" ]; then echo 'PROCESS_STOPPED: PID absent'; exit 0; fi
+    owned_cmd="$(tr '\\000' ' ' < "/proc/$TARGET_PID/cmdline" 2>/dev/null)"
+    case "$owned_cmd" in
+       *dobs6_"$TOKEN"*|*dev.yz.dnsobserver.DnsIpv6GlobalDaemon*"$TOKEN"*) ;;
+       *) echo 'PROCESS_STOP_REFUSED: PID/token ownership not verified' >&2; exit 13;;
+    esac
+    kill -TERM "$TARGET_PID" 2>/dev/null || true
+    n=0
+    while kill -0 "$TARGET_PID" 2>/dev/null && [ "$n" -lt 3 ]; do
+        sleep 1; n=$((n+1))
+    done
+    if kill -0 "$TARGET_PID" 2>/dev/null; then
+        current="$(tr '\\000' ' ' < "/proc/$TARGET_PID/cmdline" 2>/dev/null)"
+        case "$current" in
+           *dobs6_"$TOKEN"*|*dev.yz.dnsobserver.DnsIpv6GlobalDaemon*"$TOKEN"*) kill -KILL "$TARGET_PID" 2>/dev/null || true;;
+           *) echo 'PROCESS_STOP_REFUSED: PID changed before SIGKILL' >&2; exit 13;;
+        esac
+    fi
+    echo 'PROCESS_STOP: Root daemon termination requested for verified PID'
+    ;;
  recover)
     clear_owned
     if verify_clean; then rm -f "$MARKER"; echo 'RECOVERED: verified clean'; else exit 11; fi
@@ -105,7 +130,10 @@ case "$MODE" in
     fi
     if "$IP" -6 rule show | grep -Eq '^[[:space:]]*15010:' ||
        [ -n "$("$IP" -6 route show table "$TABLE" 2>/dev/null)" ]; then
-        echo 'PRECHECK_FAILED: reserved route/pref occupied' >&2; exit 4
+        echo 'PRECHECK_FAILED: reserved route/pref occupied (15010 / table 19754)' >&2
+        "$IP" -6 rule show | grep '15010:' >&2 || true
+        "$IP" -6 route show table "$TABLE" >&2 || true
+        exit 4
     fi
     if "$IP6" -t mangle -S 2>/dev/null | grep -q '0x40000000'; then
         echo 'PRECHECK_FAILED: reserved mark already used' >&2; exit 4

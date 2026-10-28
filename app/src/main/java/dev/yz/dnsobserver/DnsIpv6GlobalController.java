@@ -37,6 +37,7 @@ public final class DnsIpv6GlobalController {
     private static java.lang.Process process;
     private static boolean starting,ownsRules,promoted;
     private static String token;
+    private static int rootPid;
     private static final LinkedBlockingQueue<String> signals=new LinkedBlockingQueue<>();
     private DnsIpv6GlobalController(){}
     private static final class Endpoint {
@@ -76,11 +77,14 @@ public final class DnsIpv6GlobalController {
         return file;
     }
     private static String root(Context ctx,String mode,String session,int seconds)throws Exception{
-        if(!mode.matches("install-probe|promote|recover|status|check")||!session.matches("[a-zA-Z0-9_-]{1,64}"))
+        return root(ctx,mode,session,seconds,0);
+    }
+    private static String root(Context ctx,String mode,String session,int seconds,int targetPid)throws Exception{
+        if(!mode.matches("install-probe|promote|recover|status|check|stop-process")||!session.matches("[a-zA-Z0-9_-]{1,64}"))
             throw new IllegalArgumentException("Invalid global IPv6 command");
         String path=script(ctx).getAbsolutePath();
         if(!path.matches("/[a-zA-Z0-9_./-]+"))throw new IllegalStateException("Unexpected script path");
-        String command="/system/bin/sh "+path+" "+mode+" "+Process.myUid()+" "+session+" "+Process.myPid();
+        String command="/system/bin/sh "+path+" "+mode+" "+Process.myUid()+" "+session+" "+Process.myPid()+" "+targetPid;
         java.lang.Process p=new ProcessBuilder("su","-c",command).redirectErrorStream(true).start();
         ByteArrayOutputStream buffer=new ByteArrayOutputStream();
         Thread output=new Thread(()->{
@@ -121,13 +125,33 @@ public final class DnsIpv6GlobalController {
         if(result.isEmpty())throw new IllegalStateException("没有可用的主/从/备 DNS 上游");
         return result;
     }
+    private static int parseRootPid(String ready){
+        java.util.regex.Matcher found=java.util.regex.Pattern.compile("(?:^|\\s)pid=(\\d+)(?:\\s|$)").matcher(ready);
+        if(!found.find())return 0;
+        try {int pid=Integer.parseInt(found.group(1));return pid>1?pid:0;}
+        catch(Exception ignored){return 0;}
+    }
+    private static void stopRoot(Context ctx,java.lang.Process wrapper,int pid,String session){
+        // The su process can exit without proving app_process exited. Only
+        // terminate a numeric PID after a ROOT script confirms token ownership.
+        if(pid>1 && session!=null){
+            try{log(ctx,root(ctx,"stop-process",session,10,pid));}
+            catch(Exception error){log(ctx,"Root 子进程停止未确认："+error.getMessage());}
+        }
+        if(wrapper!=null){
+            wrapper.destroy();
+            try{if(!wrapper.waitFor(1400,TimeUnit.MILLISECONDS))wrapper.destroyForcibly();}
+            catch(Exception ex){wrapper.destroyForcibly();}
+        }
+    }
     private static String quote(String s){return "'"+s.replace("'","'\\''")+"'";}
     private static java.lang.Process spawn(Context ctx,String session,List<Endpoint> servers)throws Exception{
         String apk=ctx.getApplicationInfo().sourceDir;
         if(apk==null||!apk.startsWith("/data/app/")||!new File(apk).isFile())
             throw new IllegalStateException("未找到已安装 APK");
         StringBuilder command=new StringBuilder("CLASSPATH=").append(quote(apk))
-            .append(" /system/bin/app_process /system/bin dev.yz.dnsobserver.DnsIpv6GlobalDaemon ").append(session);
+            .append(" /system/bin/app_process /system/bin --nice-name=dobs6_")
+            .append(session).append(" dev.yz.dnsobserver.DnsIpv6GlobalDaemon ").append(session);
         for(Endpoint server:servers){
             String ip=server.ip.getHostAddress();
             if(!ip.matches("[0-9a-fA-F:.]+"))throw new IllegalArgumentException("无效数值 DNS IP");
@@ -196,7 +220,7 @@ public final class DnsIpv6GlobalController {
         synchronized(LOCK){
             if(starting||(process!=null&&process.isAlive()))return "IPv6 全局试用已经运行或启动中";
             if(DnsIpv6PilotController.isRunning())return "请先停止原 IPv6 受限试运行，不能并行开启";
-            starting=true;ownsRules=false;promoted=false;signals.clear();
+            starting=true;ownsRules=false;promoted=false;rootPid=0;signals.clear();
             token=UUID.randomUUID().toString().replace("-","");
             java.lang.Process started=null;
             boolean installAttempted=false;
@@ -206,6 +230,8 @@ public final class DnsIpv6GlobalController {
                 started=spawn(app,token,servers);process=started;
                 String ready=signals.poll(8000,TimeUnit.MILLISECONDS);
                 if(ready==null||!ready.startsWith("DNS6GLOBAL READY"))throw new IllegalStateException("代理未就绪："+ready);
+                rootPid=parseRootPid(ready);
+                if(rootPid<=1)throw new IllegalStateException("Root 代理未报告可核验 PID，拒绝安装规则");
                 installAttempted=true;
                 String installed=root(app,"install-probe",token,12);ownsRules=true;log(app,installed);
                 if(!selfTest(app))throw new IllegalStateException("原始 IPv6 目标/回包自检未全通过，禁止扩大匹配");
@@ -221,15 +247,15 @@ public final class DnsIpv6GlobalController {
                         log(app,"Root 服务意外退出：执行安全清理（非定时恢复）");
                         try{String result=root(app,"recover",token,12);ownsRules=false;promoted=false;log(app,result);}
                         catch(Exception ex){log(app,"自动清理未确认："+ex.getMessage());}
-                        process=null;
+                        process=null;rootPid=0;
                     }
                 },"IPv6-global-exit-guard");guard.setDaemon(true);guard.start();
                 log(app,"全局 IPv6 DNS53 已开启（UID 0 除外）；持续运行直至手动关闭");
                 return "IPv6 DNS53 已启用：多地址 UDP/TCP 自检全部通过；无定时关闭";
             }catch(Exception error){
                 log(app,"启用失败："+error.getClass().getSimpleName()+" "+error.getMessage());
-                if(started!=null){started.destroy();try{if(!started.waitFor(700,TimeUnit.MILLISECONDS))started.destroyForcibly();}catch(Exception ignored){started.destroyForcibly();}}
-                process=null;
+                stopRoot(app,started,rootPid,token);
+                process=null;rootPid=0;
                 // A PRECHECK_FAILED never owns a chain; do not touch another session.
                 // Other failures can be partial installations, so always verify recovery.
                 if(ownsRules||(installAttempted && (error.getMessage()==null ||
@@ -243,11 +269,9 @@ public final class DnsIpv6GlobalController {
     }
     public static String stop(Context ctx){
         synchronized(LOCK){
-            if(process!=null){
-                process.destroy();
-                try{if(!process.waitFor(800,TimeUnit.MILLISECONDS))process.destroyForcibly();}
-                catch(Exception ex){process.destroyForcibly();}
-                process=null;
+            if(process!=null || rootPid>1){
+                stopRoot(ctx,process,rootPid,token);
+                process=null;rootPid=0;
             }
             String result;
             try{result=root(ctx,"recover","cleanup",14);ownsRules=false;promoted=false;}

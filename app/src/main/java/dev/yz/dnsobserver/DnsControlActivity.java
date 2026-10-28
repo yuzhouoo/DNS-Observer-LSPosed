@@ -160,7 +160,7 @@ public final class DnsControlActivity extends Activity {
         LinearLayout root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(16),dp(16),dp(16),dp(26));scroll.addView(root);
         setContentView(scroll);
-        root.addView(label("DNS Observer · v0.6.2-beta4",23,FG));
+        root.addView(label("DNS Observer · v0.6.3-beta5",23,FG));
         root.addView(label("IPv4 NAT / IPv6 TPROXY 独立选择 · 启用后不定时关闭 · Bootstrap-only",12,SECOND));
         status=selectable(label("正在检查接管状态…",14,FG));
         logArea(root,status,96);

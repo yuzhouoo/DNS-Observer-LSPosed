@@ -47,6 +47,10 @@ public final class DnsIpv6GlobalDaemon {
             Os.setsockoptTimeval(fd,OsConstants.SOL_SOCKET,OsConstants.SO_RCVTIMEO,StructTimeval.fromMillis(950));
             Os.bind(fd,InetAddress.getByName("::1"),PORT);
             return fd;
+        }catch(ErrnoException ex){
+            log("BIND_ERROR protocol="+(type==OsConstants.SOCK_DGRAM?"UDP":"TCP")+
+                " address=::1 port="+PORT+" errno="+ex.errno+" "+ex.getMessage());
+            close(fd);throw ex;
         }catch(Exception ex){close(fd);throw ex;}
     }
     private static final class UdpMessage {
@@ -192,7 +196,7 @@ public final class DnsIpv6GlobalDaemon {
             Thread thUdp=new Thread(()->serveUdp(fUdp,upstream,pool),"GlobalDns-UDP");
             Thread thTcp=new Thread(()->serveTcp(fTcp,upstream,pool),"GlobalDns-TCP");
             thUdp.setDaemon(true);thTcp.setDaemon(true);thUdp.start();thTcp.start();
-            log("READY euid=0 port="+PORT+" endpoints="+upstream.length+" persistent=1 pktinfo=1");
+            log("READY euid=0 pid="+Os.getpid()+" port="+PORT+" endpoints="+upstream.length+" persistent=1 pktinfo=1");
             while(running && thUdp.isAlive() && thTcp.isAlive())Thread.sleep(350);
         }catch(Throwable ex){log("ERROR "+ex.getClass().getSimpleName()+" "+String.valueOf(ex.getMessage()));}
         finally{

@@ -1,3 +1,19 @@
+# DNS Observer v0.6.3-beta5 — IPv6 启动失败与自动修复循环修正
+
+实机 v0.6.2-beta4 日志出现 `PRECHECK_FAILED: reserved route/pref occupied` 和 `EADDRINUSE`，失败后自动修复每 15 秒尝试重启。
+
+本版本：
+- 首次 IPv6 启动没有完成真实 UDP/TCP 自检与规则激活，则本次会话不再执行 IPv6 覆盖检测/自动修复；保留 IPv4 正常检测。
+- 仅曾经实际成功激活 IPv6 的会话才可以自动修复；每次异常最多尝试一次，修复失败锁定等待手动关闭/检查，避免重复占用端口和修改路由。
+- Root IPv6 代理 READY 增加 `pid=`；启动/停止流程使用带会话 token 校验的 Root stop-process 子命令，先 TERM 后必要时 KILL；不会按进程名盲杀其它 Root 进程。
+- 监听 bind 失败新增具体协议、地址、端口和 errno 日志。
+- route/pref 冲突新增实际占用规则和路由表输出，绝不覆盖不属于本模块的规则。
+- 仅勾 IPv4 时完全不启动 IPv6 代理；手动统一关闭仍同时清理 IPv4/IPv6 和旧实验规则。
+
+注意：本版本并不强制清理所有历史孤儿进程。旧版残留的 Root 进程若没有可验证 PID/会话信息，不会被盲目终止，仍须先检查。首次 IPv6 启用失败不等于系统覆盖。新的 PID 与自动修复分支尚需实机验证。
+
+---
+
 # DNS Observer v0.6.2-beta4 — 统一 IPv4 / IPv6 DNS 接管控制
 
 - IPv4 NAT 与 IPv6 TPROXY **独立复选框**。至少选一项启动。依然只处理 UDP/TCP 53；不覆盖 DoH/DoT/DoQ；IPv6 Root UID 0 不劫持。
