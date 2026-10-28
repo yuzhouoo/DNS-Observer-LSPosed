@@ -25,5 +25,5 @@ assert 'DnsIpv6Experiment.recover(app)' in control and 'DnsIpv6Experiment.recove
 assert 'DnsIpv6PilotController.stop(this)' in (root/'DnsTakeoverService.java').read_text()
 assert 'DnsIpv6PilotController.isRunning()' in (root/'DnsIpv6GlobalController.java').read_text()
 assert 'copyText(String value,String title)' in ui
-assert 'v0.6.2-beta4' in ui
+assert 'v0.6.3-beta5' in ui
 print('PASS: opt-in restricted IPv6 multi-query Root pilot, auto-recovery and UI wiring')

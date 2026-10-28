@@ -31,7 +31,7 @@ import java.util.concurrent.TimeUnit;
  * after four successful client response checks. Root UID is always excluded. */
 public final class DnsIpv6GlobalController {
     private static final Object LOCK=new Object();
-    private static final String SCRIPT="dns-ipv6-global-v062.sh";
+    private static final String SCRIPT="dns-ipv6-global-v063.sh";
     private static final String PREF_LOG="ipv6_global_log";
     private static final String[] DOCS={"2001:db8:ffff::53","2001:db8:ffff::54"};
     private static java.lang.Process process;
@@ -80,7 +80,7 @@ public final class DnsIpv6GlobalController {
         return root(ctx,mode,session,seconds,0);
     }
     private static String root(Context ctx,String mode,String session,int seconds,int targetPid)throws Exception{
-        if(!mode.matches("install-probe|promote|recover|status|check|stop-process")||!session.matches("[a-zA-Z0-9_-]{1,64}"))
+        if(!mode.matches("install-probe|promote|recover|status|check|stop-process|stop-owned-daemons")||!session.matches("[a-zA-Z0-9_-]{1,64}"))
             throw new IllegalArgumentException("Invalid global IPv6 command");
         String path=script(ctx).getAbsolutePath();
         if(!path.matches("/[a-zA-Z0-9_./-]+"))throw new IllegalStateException("Unexpected script path");
@@ -274,6 +274,10 @@ public final class DnsIpv6GlobalController {
                 process=null;rootPid=0;
             }
             String result;
+            // Explicit STOP is allowed to clean an older orphaned DNS Observer
+            // Root listener after the app's original su wrapper was lost.
+            try {log(ctx,root(ctx,"stop-owned-daemons","cleanup",12));}
+            catch(Exception ex){log(ctx,"旧 Root 代理进程核查失败："+ex.getMessage());}
             try{result=root(ctx,"recover","cleanup",14);ownsRules=false;promoted=false;}
             catch(Exception ex){result="RECOVERY_FAILED: "+ex.getMessage();}
             log(ctx,"关闭 IPv6 全局 DNS："+result);

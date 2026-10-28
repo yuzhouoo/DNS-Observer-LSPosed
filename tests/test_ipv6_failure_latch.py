@@ -17,6 +17,8 @@ assert 'root(ctx,"stop-process",session,10,pid)' in globalctl
 assert 'pid="+Os.getpid()' in daemon
 assert 'BIND_ERROR protocol=' in daemon
 assert 'PROCESS_STOP_REFUSED' in script and 'PROCESS_STOP:' in script
+assert 'stop-owned-daemons' in script and 'stop-owned-daemons' in globalctl
+assert 'dns-ipv6-global-v063.sh' in globalctl
 assert 'reserved route/pref occupied (15010 / table 19754)' in script
 assert 'pkill -f' not in script
 print("PASS: failed-start repair latch, PID-verified teardown, no orphan-retry loop")

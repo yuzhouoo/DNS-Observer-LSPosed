@@ -39,6 +39,6 @@ assert 'TTL_SECONDS=145' not in globald
 assert 'System.nanoTime()<limit' not in globald
 assert 'consecutiveFailures>=6' not in globald
 assert 'public static boolean active(Context ctx)' in globalctl
-assert 'dns-ipv6-global-v062.sh' in globalctl
+assert 'dns-ipv6-global-v063.sh' in globalctl
 assert 'dns-root-v062.sh' in v4
 print('PASS: IPv4/IPv6 independent, force stop, timed watchdog removed, boot and opt-in repair, Bootstrap-only, scroll logs')

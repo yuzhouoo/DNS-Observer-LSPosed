@@ -6,7 +6,7 @@ MODE="${1:-}"; APP_UID="${2:-}"; TOKEN="${3:-}"; OWNER_PID="${4:-}"; TARGET_PID=
 CHAIN=DO6G061; TABLE=19754; PREF=15010
 MARK=0x40000000/0x40000000; PROXY=15456
 MARKER="/data/local/tmp/dobs6g61_${APP_UID}.run"
-case "$MODE" in install-probe|promote|recover|status|check|watch|stop-process) ;; *) exit 2;; esac
+case "$MODE" in install-probe|promote|recover|status|check|watch|stop-process|stop-owned-daemons) ;; *) exit 2;; esac
 case "$APP_UID" in ''|*[!0-9]*) exit 2;; esac
 case "$TOKEN" in ''|*[!a-zA-Z0-9_-]*) exit 2;; esac
 IP6="$(command -v ip6tables 2>/dev/null || true)"
@@ -71,6 +71,27 @@ verify_clean() {
     echo 'VERIFY_FAILED: global module residue; manual cleanup required' >&2; return 1
 }
 case "$MODE" in
+ stop-owned-daemons)
+    # Explicit user STOP only. Kill exclusively DNS Observer global Root
+    # processes identified by their exact Java class or our unique nice-name.
+    # Never kill all app_process instances and never terminate by port alone.
+    count=0
+    for proc in /proc/[0-9]*; do
+        pid="${proc##*/}"
+        case "$pid" in ''|*[!0-9]*) continue;; esac
+        [ "$pid" -gt 1 ] || continue
+        [ -r "$proc/cmdline" ] && [ -r "$proc/status" ] || continue
+        cmd="$(tr '\\000' ' ' < "$proc/cmdline" 2>/dev/null)"
+        case "$cmd" in
+            *dev.yz.dnsobserver.DnsIpv6GlobalDaemon*|*dobs6_*) ;;
+            *) continue;;
+        esac
+        owner="$(awk '/^Uid:/ {print $2; exit}' "$proc/status" 2>/dev/null)"
+        [ "$owner" = 0 ] || continue
+        kill -TERM "$pid" 2>/dev/null && count=$((count+1))
+    done
+    echo "OWNED_DAEMON_STOP: requested TERM for $count verified DNS Observer Root processes"
+    ;;
  stop-process)
     case "$TARGET_PID" in ''|*[!0-9]*) echo 'PROCESS_STOP_REFUSED: invalid PID' >&2; exit 13;; esac
     [ "$TARGET_PID" -gt 1 ] || { echo 'PROCESS_STOP_REFUSED: protected PID' >&2; exit 13; }
