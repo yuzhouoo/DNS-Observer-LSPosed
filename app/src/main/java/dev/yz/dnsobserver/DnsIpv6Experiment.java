@@ -25,6 +25,7 @@ import java.util.concurrent.TimeUnit;
 public final class DnsIpv6Experiment {
     private static final String SCRIPT_NAME="dns-ipv6-probe-v055.sh";
     private static final int TEST_PORT=15453, LISTEN_PORT=15454;
+    private static final int DIRECT_TCP_PORT=15455;
     private static final String DOC_IP="2001:db8:ffff::53";
     private DnsIpv6Experiment() {}
 
@@ -118,7 +119,8 @@ public final class DnsIpv6Experiment {
             String ready=waitFor(queue,"READY",6000,report);
             if(!"OK".equals(ready)){report.append(name).append("：透明 Socket 未就绪（").append(ready).append("）\n");return false;}
             InetAddress target=InetAddress.getByName("LOCAL".equals(stage)?DOC_IP:"::1");
-            send(proto,stage,token,target,"DIRECT".equals(stage)?LISTEN_PORT:TEST_PORT);
+            int sendPort="DIRECT".equals(stage)?("TCP".equals(proto)?DIRECT_TCP_PORT:LISTEN_PORT):TEST_PORT;
+            send(proto,stage,token,target,sendPort);
             String observed=waitFor(queue,"RECV_OK",5000,report);
             boolean success="OK".equals(observed);
             report.append(name).append("：").append(success?"成功":"未通过（"+observed+"）").append('\n');
@@ -128,8 +130,14 @@ public final class DnsIpv6Experiment {
         finally{
             if(proc!=null){
                 proc.destroy();
-                try{if(!proc.waitFor(350,TimeUnit.MILLISECONDS))proc.destroyForcibly();}
-                catch(InterruptedException e){Thread.currentThread().interrupt();proc.destroyForcibly();}
+                // RECV_OK / ERROR is printed only after Root sockets close.
+                // Allow the su/app_process wrapper to exit normally before signalling it.
+                try{
+                    if(!proc.waitFor(1200,TimeUnit.MILLISECONDS)){
+                        proc.destroy();
+                        if(!proc.waitFor(350,TimeUnit.MILLISECONDS))proc.destroyForcibly();
+                    }
+                }catch(InterruptedException e){Thread.currentThread().interrupt();proc.destroyForcibly();}
             }
         }
     }
@@ -149,7 +157,7 @@ public final class DnsIpv6Experiment {
     }
     public static String run(Context ctx){
         String token=UUID.randomUUID().toString().replace("-","");
-        StringBuilder report=new StringBuilder("IPv6 TPROXY 分阶段现场实验 v0.5.5\n仅合成端口 15453 / 透明监听 15454，绝不拦截真实 DNS 53。\n");
+        StringBuilder report=new StringBuilder("IPv6 TPROXY 分阶段现场实验 v0.5.6\n仅合成端口 15453 / 透明监听 15454，绝不拦截真实 DNS 53。\n");
         boolean clean=true;
         try {
             boolean udp=single(ctx,token,"UDP","DIRECT",report);

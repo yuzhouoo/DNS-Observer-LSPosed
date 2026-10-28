@@ -38,6 +38,7 @@ jobs:
           python3 tests/test_ipv6_experiment.py
           python3 tests/test_ipv6_simulator.py
           python3 tests/test_ipv6_root_probe.py
+          python3 tests/test_ipv6_listener_lifecycle.py
           python3 tests/test_log_copy.py
           mkdir -p /tmp/dnsobserver-jvm
           javac -encoding UTF-8 -d /tmp/dnsobserver-jvm \
@@ -81,11 +82,11 @@ jobs:
           print('Verified: Modern API 102 resources included; no legacy entry')
           PY
       - name: Package complete source snapshot
-        run: git archive --format=zip --output=DNSObserver-v0.5.5-source.zip HEAD
+        run: git archive --format=zip --output=DNSObserver-v0.5.6-source.zip HEAD
       - uses: actions/upload-artifact@v4
         with:
-          name: DNSObserver-v0.5.5-source
-          path: DNSObserver-v0.5.5-source.zip
+          name: DNSObserver-v0.5.6-source
+          path: DNSObserver-v0.5.6-source.zip
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:

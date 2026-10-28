@@ -1,3 +1,15 @@
+# DNS Observer v0.5.6 — 修复 TCP 回环 EADDRINUSE
+
+根据 OnePlus 12 实测 v0.5.5 日志：Root TCP 直连 READY / RECV_OK，UDP TPROXY 回环成功，但 TCP TPROXY 回环绑定 ::1:15454 时返回 errno=98 (EADDRINUSE)。发生于 bind 阶段，尚未验证 TCP TPROXY 能力。
+
+- 原 Root 监听程序在打印 RECV_OK 后才关闭 accepted/listen Socket，Android 前台进程收到该消息后又立即 destroy() su 包装进程，容易与下阶段同端口 TCP bind 竞争。
+- 现在先关闭 Root Socket，再输出 CLOSED 和 RECV_OK；前台给 Root 包装进程 1.2 秒自然退出窗口，减少强制终止残留。
+- TCP 直连预检独立监听 ::1:15455；TPROXY 回环和本机出站仍使用 ::1:15454，隔离连续快速重绑定，同时为 TCP 监听设置 SO_REUSEADDR。
+- 保持 UDP/TCP TPROXY 规则、单一测试地址/端口、35 秒守护回滚、一键恢复和残留校验不变。仍不接管真实 DNS 53；还没有验证本机 IPv6 出站流量的 TCP/UDP 透明投递。
+- 测试日志可复制，重点关注 TCP LOOP 的 bind 是否成功、TPROXY 命中计数、本机非回环阶段是否运行和恢复 VERIFIY_CLEAN。实机运行才能确认 ColorOS 具体表现。
+
+---
+
 # DNS Observer v0.5.5 — IPv6 UDP/TCP 与本机出站隔离实验
 
 - 在 v0.5.4 的可复制日志基础上，分阶段执行 IPv6 透明 Socket **UDP 与 TCP** 检验，先直连 ::1，再经 mangle PREROUTING TPROXY 回环接收。

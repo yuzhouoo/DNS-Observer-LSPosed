@@ -15,6 +15,8 @@ import java.nio.charset.StandardCharsets;
 public final class DnsIpv6RootProbe {
     private static final int IPV6_TRANSPARENT=75;
     private static final int LISTEN_PORT=15454;
+    // Isolate the direct TCP preflight from the TPROXY TCP listener: no rapid rebind.
+    private static final int DIRECT_TCP_PORT=15455;
     private DnsIpv6RootProbe() {}
     private static void say(String msg) {
         System.out.println("DNS6PROBE "+msg);
@@ -27,17 +29,22 @@ public final class DnsIpv6RootProbe {
         }
         String proto=args[1],stage=args[2];
         FileDescriptor listen=null,accepted=null;
+        String outcome="ERROR probe terminated without result";
         try {
             say("EUID="+Os.geteuid()+" protocol="+proto+" stage="+stage);
             boolean tcp="TCP".equals(proto);
             listen=Os.socket(OsConstants.AF_INET6,tcp?OsConstants.SOCK_STREAM:OsConstants.SOCK_DGRAM,
                     tcp?OsConstants.IPPROTO_TCP:OsConstants.IPPROTO_UDP);
             Os.setsockoptInt(listen,OsConstants.IPPROTO_IPV6,IPV6_TRANSPARENT,1);
+            // A freshly closed TCP listener/accepted socket may still have TIME_WAIT state.
+            // SO_REUSEADDR and a separate direct-preflight port prevent false EADDRINUSE.
+            if(tcp) Os.setsockoptInt(listen,OsConstants.SOL_SOCKET,OsConstants.SO_REUSEADDR,1);
             Os.setsockoptTimeval(listen,OsConstants.SOL_SOCKET,OsConstants.SO_RCVTIMEO,
                     StructTimeval.fromMillis(6500));
-            Os.bind(listen,InetAddress.getByName("::1"),LISTEN_PORT);
+            int listenPort=tcp && "DIRECT".equals(stage)?DIRECT_TCP_PORT:LISTEN_PORT;
+            Os.bind(listen,InetAddress.getByName("::1"),listenPort);
             if(tcp)Os.listen(listen,1);
-            say("READY transparent_ipv6=1 bind=::1:"+LISTEN_PORT+" protocol="+proto);
+            say("READY transparent_ipv6=1 bind=::1:"+listenPort+" protocol="+proto);
             byte[] data=new byte[256];
             if(tcp) {
                 accepted=Os.accept(listen,new InetSocketAddress(0));
@@ -47,13 +54,17 @@ public final class DnsIpv6RootProbe {
             int size=Os.read(tcp?accepted:listen,data,0,data.length);
             String expected="DNS6-"+proto+"-"+stage+"-"+args[0];
             String got=new String(data,0,size,StandardCharsets.US_ASCII);
-            if(expected.equals(got))say("RECV_OK protocol="+proto+" stage="+stage+" bytes="+size);
-            else say("RECV_MISMATCH protocol="+proto+" stage="+stage+" bytes="+size);
-        }catch(ErrnoException e){say("ERROR errno="+e.errno+" "+e.getMessage());}
-        catch(Throwable t){say("ERROR "+t.getClass().getSimpleName()+" "+String.valueOf(t.getMessage()));}
+            if(expected.equals(got))outcome="RECV_OK protocol="+proto+" stage="+stage+" bytes="+size;
+            else outcome="RECV_MISMATCH protocol="+proto+" stage="+stage+" bytes="+size;
+        }catch(ErrnoException e){outcome="ERROR errno="+e.errno+" "+e.getMessage();}
+        catch(Throwable t){outcome="ERROR "+t.getClass().getSimpleName()+" "+String.valueOf(t.getMessage());}
         finally {
             if(accepted!=null)try{Os.close(accepted);}catch(Exception ignored){}
             if(listen!=null)try{Os.close(listen);}catch(Exception ignored){}
         }
+        // Signal success only AFTER both sockets are closed. The UI must not
+        // launch the next Root listener while the previous bind is still live.
+        say("CLOSED protocol="+proto+" stage="+stage);
+        say(outcome);
     }
 }

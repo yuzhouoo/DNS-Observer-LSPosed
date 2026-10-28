@@ -96,7 +96,7 @@ public final class DnsControlActivity extends Activity {
         LinearLayout root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(20),dp(16),dp(20),dp(24));scroll.addView(root);
         setContentView(scroll);
-        root.addView(label("DNS 接管 · v0.5.5",23,FG));
+        root.addView(label("DNS 接管 · v0.5.6",23,FG));
         root.addView(label("保留现有 LSPosed DNS 监控；接管仅作用于常规 UDP/TCP 53。\n需要 Root。默认关闭、不随系统开机启动。",13,SECOND));
         status=selectable(label("正在检查状态…",15,FG));root.addView(status);
         button("复制当前接管状态",root).setOnClickListener(v->copyVisibleText(status,"接管状态"));
@@ -120,7 +120,7 @@ public final class DnsControlActivity extends Activity {
         speedResults=new LinearLayout(this);speedResults.setOrientation(LinearLayout.VERTICAL);
         root.addView(speedResults);
         speedResults.addView(label("未开始测速；点击上方按钮查看每个 IP 的独立延迟。",13,SECOND));
-        root.addView(label("IPv6 TPROXY 分阶段实验：UDP/TCP 回环 + 本机非回环保留文档地址，仅使用特殊端口 15453 / 15454。不接管真实 DNS，35 秒自动清理并核对残留。",12,SECOND));
+        root.addView(label("IPv6 TPROXY 分阶段实验：UDP/TCP 回环 + 本机非回环保留文档地址，仅使用测试端口 15453 / 15454（TCP 直连预检为 15455）。不接管真实 DNS，35 秒自动清理并核对残留。",12,SECOND));
         ipv6ExperimentResult=selectable(label(
                 prefs.getString("ipv6_last_report","IPv6 TPROXY 实验尚未运行。"),12,FG));
         root.addView(ipv6ExperimentResult);
