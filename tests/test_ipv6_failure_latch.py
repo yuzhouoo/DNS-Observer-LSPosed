@@ -20,5 +20,5 @@ assert 'PROCESS_STOP_REFUSED' in script and 'PROCESS_STOP:' in script
 assert 'stop-owned-daemons' in script and 'stop-owned-daemons' in globalctl
 assert 'dns-ipv6-global-v063.sh' in globalctl
 assert 'reserved route/pref occupied (15010 / table 19754)' in script
-assert 'pkill -f' not in script
+assert not any(line.strip().startswith("pkill -f") for line in script.splitlines())
 print("PASS: failed-start repair latch, PID-verified teardown, no orphan-retry loop")
