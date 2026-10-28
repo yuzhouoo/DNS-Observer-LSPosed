@@ -31,7 +31,7 @@ public final class DnsControlActivity extends Activity {
     private LinearLayout speedResults;
     private volatile boolean measuring;
     private CheckBox ipv6;
-    private TextView status;
+    private TextView status, ipv6ExperimentResult;
     private SharedPreferences prefs;
     private boolean visible;
 
@@ -67,7 +67,7 @@ public final class DnsControlActivity extends Activity {
         LinearLayout root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(20),dp(16),dp(20),dp(24));scroll.addView(root);
         setContentView(scroll);
-        root.addView(label("DNS 接管 · v0.5.0",23,FG));
+        root.addView(label("DNS 接管 · v0.5.2",23,FG));
         root.addView(label("保留现有 LSPosed DNS 监控；接管仅作用于常规 UDP/TCP 53。\n需要 Root。默认关闭、不随系统开机启动。",13,SECOND));
         status=label("正在检查状态…",15,FG);root.addView(status);
         host=field(root,"主 DNS 域名（不带协议、端口）",prefs.getString("host",""));
@@ -83,12 +83,33 @@ public final class DnsControlActivity extends Activity {
         ipv6=new CheckBox(this);ipv6.setText("同时重定向 IPv6 DNS（实验性，需 ip6tables NAT）");
         ipv6.setTextColor(FG);ipv6.setChecked(prefs.getBoolean("ipv6",false));
         root.addView(ipv6);
+        root.addView(label("兼容性：IPv6 ip6tables NAT 不可用时，启动接管会明确降级为 IPv4-only，不影响独立 IPv6 测速。IPv6 TPROXY 需单独验证。",12,SECOND));
         root.addView(label("引导流程：优先系统 DNS 解析上游域名，失败时可使用备用纯 IP DNS。启用后只刷新上游地址，不修改系统 DNS 设置。",12,SECOND));
         root.addView(label("每个 IP 独立测速：ICMP Ping、UDP DNS、TCP DNS（IPv4/IPv6 分开）。\nPing 无响应不能直接判定 IP 不通，DNS 服务单独验证。",12,SECOND));
         button("开始主 / 从 / 备：Ping + UDP/TCP DNS 测速",root).setOnClickListener(v->testServer());
         speedResults=new LinearLayout(this);speedResults.setOrientation(LinearLayout.VERTICAL);
         root.addView(speedResults);
         speedResults.addView(label("未开始测速；点击上方按钮查看每个 IP 的独立延迟。",13,SECOND));
+        root.addView(label("IPv6 TPROXY 实验（仅 ::1 回环、特殊端口 15453，不接管真实 DNS）：实验规则 20 秒自动清理，可随时一键恢复。",12,SECOND));
+        ipv6ExperimentResult=label("IPv6 TPROXY 实验尚未运行。",12,SECOND);
+        root.addView(ipv6ExperimentResult);
+        button("验证 IPv6 TPROXY · 限时隔离实验",root).setOnClickListener(v ->
+            new AlertDialog.Builder(this).setTitle("运行 IPv6 TPROXY 隔离实验？")
+                .setMessage("实验只临时匹配 IPv6 回环 ::1:15453，不修改 Android 路由、现有 fwmark、DNS 53 或系统规则。即使安装成功也不代表真实 DNS 已接管。20 秒超时清理，并提供手动恢复。")
+                .setNegativeButton("取消",null)
+                .setPositiveButton("开始验证",(d,w)-> new Thread(()->{
+                    ui.post(()->{if(!isDestroyed())ipv6ExperimentResult.setText("正在安装隔离测试规则…");});
+                    final String result=DnsIpv6Experiment.run(this);
+                    ui.post(()->{if(!isDestroyed())ipv6ExperimentResult.setText(result);});
+                },"DNS-IPv6-experiment").start()).show());
+        button("一键恢复 IPv6 实验规则",root).setOnClickListener(v ->
+            new Thread(()->{
+                String outcome;
+                try{outcome=DnsIpv6Experiment.recover(this);}
+                catch(Exception e){outcome="实验规则恢复失败："+e.getMessage();}
+                final String reply=outcome;
+                ui.post(()->{if(!isDestroyed())ipv6ExperimentResult.setText(reply);});
+            },"DNS-IPv6-recover").start());
         button("启动 DNS 接管",root).setOnClickListener(v->new AlertDialog.Builder(this)
                 .setTitle("启用 Root DNS 接管？")
                 .setMessage("将重定向本机普通 UDP/TCP 53 请求。请确认你可以使用 KernelSU 或 Root 命令恢复网络。首次使用请关闭其它 DNS 重定向规则。")

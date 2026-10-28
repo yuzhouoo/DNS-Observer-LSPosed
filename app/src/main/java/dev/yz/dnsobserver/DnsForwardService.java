@@ -84,6 +84,7 @@ public final class DnsForwardService extends Service {
         subHost = intent.getStringExtra("sub_host");
         subPort = intent.getIntExtra("sub_port",31017);
         useIpv6 = intent.getBooleanExtra("ipv6", false);
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit().remove("ipv6_warning").apply();
         session = UUID.randomUUID().toString().replace("-", "");
         manager = new Thread(this::startNow, "DNS-manager");
         manager.start();
@@ -108,6 +109,13 @@ public final class DnsForwardService extends Service {
     private void startNow() {
         writeState(false, "准备启动，正在进行 Bootstrap 与上游检测");
         try {
+            // Root checks can take seconds; never block Android's Service main thread.
+            if (useIpv6 && !DnsRootRules.supportsIpv6Nat(this)) {
+                useIpv6 = false;
+                getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                    .putString("ipv6_warning", "本机 ip6tables IPv6 NAT 不可用；已降级为仅 IPv4 DNS 接管，IPv6 DNS 未接管")
+                    .apply();
+            }
             if (host == null || host.trim().isEmpty() || host.length() > 253)
                 throw new IllegalArgumentException("请填写上游 DNS 域名");
             if (port < 1 || port > 65535) throw new IllegalArgumentException("上游端口不合法");
@@ -150,7 +158,9 @@ public final class DnsForwardService extends Service {
                 activated = true;
             }
             if (cancellationRequested) { stopNow(); return; }
-            writeState(true, "接管已启动 · " + DnsFailover.NAMES[rolePolicy.current()]+" DNS");
+            String warning=getSharedPreferences(PREFS, MODE_PRIVATE).getString("ipv6_warning", "");
+            writeState(true, "接管已启动 · " + DnsFailover.NAMES[rolePolicy.current()]+" DNS"
+                    +(warning.isEmpty()?"":" · "+warning));
             Thread health = new Thread(this::healthLoop, "DNS-health");
             health.setDaemon(true);
             health.start();

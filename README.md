@@ -1,3 +1,15 @@
+# DNS Observer v0.5.2 — IPv6 NAT 自动降级 + 隔离 TPROXY 现场验证
+
+- 用户的 OnePlus 12 / Android 16 6.1.141 内核报告 `# CONFIG_IP6_NF_NAT is not set`、`# CONFIG_NF_TABLES is not set`、`CONFIG_NF_TPROXY_IPV6=y`，因此旧版 IPv6 NAT REDIRECT 不可能正常工作。
+- 选择 IPv6 重定向后，启动前自动检测 ip6tables NAT；不支持则只开启 IPv4 DNS REDIRECT，并在状态中警告 **IPv6 DNS 未接管**。IPv6 Ping/UDP/TCP DNS 测速不变。
+- 新增“验证 IPv6 TPROXY · 限时隔离实验”按钮：只向 `mangle PREROUTING` 加入严格匹配 `-i lo -d ::1/128 --dport 15453` 的 UDP/TCP 临时跳转，使用应用专属 `DO6TST53` 链，测试 `TPROXY --on-ip ::1 --on-port 15454` 在当前 ROM 能否创建以及**仅回环 UDP 报文**是否能被送达本地测试端口。
+- **不拦截普通 DNS 53**、不修改 `ip -6 rule`、不写任何 fwmark 策略路由、不触及 `qcom_NWMGR` / `connmark_mangle_OUTPUT` 规则；App finally 清理、20 秒 Root watchdog 自动恢复、显式“一键恢复 IPv6 实验规则”。
+- 实验规则安装成功、链计数器命中，都**不代表本机外部 IPv6 DNS 已被接管**；还需要具备 `IPV6_TRANSPARENT` 监听、受控本机 OUTPUT 路由验证和实际 DNS 报文链路验证，这部分未完成，不能宣传为可用 IPv6 DNS 全局接管。
+- 请先关闭生产 DNS 接管并保持实验网络可恢复；如果实验恢复按钮报错，先使用 root shell 运行（只删除本实验自有链）：`ip6tables -t mangle -D PREROUTING -i lo -d ::1/128 -p udp --dport 15453 -j DO6TST53` 和 tcp 同理，然后 `ip6tables -t mangle -F DO6TST53; ip6tables -t mangle -X DO6TST53`。
+- 编译和模拟规则检查均不能代替 ColorOS 16 实机运行。执行后的现场报告请反馈，尤其“隔离验证是否能插入 TPROXY 目标”和“回环 UDP 是否收到”。
+
+---
+
 # DNS Observer v0.5.1 — ICMP Ping 与 DNS 服务延迟分离
 
 每组（主、从、备）的每个 IPv4/IPv6 地址分别测 ICMP Echo RTT、UDP DNS 查询、TCP DNS 查询。

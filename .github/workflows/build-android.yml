@@ -34,6 +34,9 @@ jobs:
         run: |
           set -euo pipefail
           sh -n app/src/main/assets/dns-root.sh
+          sh -n app/src/main/assets/dns-ipv6-tproxy-probe.sh
+          python3 tests/test_ipv6_experiment.py
+          python3 tests/test_ipv6_simulator.py
           mkdir -p /tmp/dnsobserver-jvm
           javac -encoding UTF-8 -d /tmp/dnsobserver-jvm \
             app/src/main/java/dev/yz/dnsobserver/DnsPacket.java \
@@ -68,6 +71,7 @@ jobs:
               assert expected.issubset(members), 'Modern module metadata missing: ' + repr(expected - members)
               assert 'assets/xposed_init' not in members, 'Legacy entry file must be absent'
               assert 'assets/dns-root.sh' in members, 'Root DNS control script missing from APK'
+              assert 'assets/dns-ipv6-tproxy-probe.sh' in members, 'IPv6 TPROXY experiment missing from APK'
               assert z.read(base + 'java_init.list').decode().strip() == 'dev.yz.dnsobserver.ModernHookEntry'
               assert z.read(base + 'scope.list').decode().strip() == 'system'
               props = z.read(base + 'module.prop').decode()
@@ -75,11 +79,11 @@ jobs:
           print('Verified: Modern API 102 resources included; no legacy entry')
           PY
       - name: Package complete source snapshot
-        run: git archive --format=zip --output=DNSObserver-v0.5.1-source.zip HEAD
+        run: git archive --format=zip --output=DNSObserver-v0.5.2-source.zip HEAD
       - uses: actions/upload-artifact@v4
         with:
-          name: DNSObserver-v0.5.1-source
-          path: DNSObserver-v0.5.1-source.zip
+          name: DNSObserver-v0.5.2-source
+          path: DNSObserver-v0.5.2-source.zip
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:

@@ -13,7 +13,7 @@ import java.util.concurrent.TimeUnit;
 /** The ONLY code responsible for Root firewall changes. No persistent boot scripts. */
 public final class DnsRootRules {
     public static final int PORT = 15353;
-    private static final String SCRIPT = "dns-root-v030.sh";
+    private static final String SCRIPT = "dns-root-v052.sh";
 
     private DnsRootRules() { }
 
@@ -85,6 +85,18 @@ public final class DnsRootRules {
 
     public static void remove(Context ctx) throws Exception {
         invoke(ctx, "remove", false, "cleanup", 12);
+    }
+
+    /** An IPv6 NAT table is required for the existing REDIRECT implementation. */
+    public static boolean supportsIpv6Nat(Context ctx) {
+        try {
+            java.lang.Process proc = new ProcessBuilder("su", "-c",
+                    "ip6tables -t nat -S >/dev/null 2>&1").start();
+            if (!proc.waitFor(5, TimeUnit.SECONDS)) {
+                proc.destroyForcibly();return false;
+            }
+            return proc.exitValue() == 0;
+        } catch (Exception e) { return false; }
     }
 
     public static boolean active(Context ctx) {
