@@ -85,7 +85,7 @@ public final class MainActivity extends Activity {
 
         TextView title = text("DNS Observer", 27, TEXT, true);
         main.addView(title);
-        TextView subtitle = text("系统 DNS 观察 · LSPosed API 102 · v0.6.0-beta2", 12, MUTED, false);
+        TextView subtitle = text("系统 DNS 观察 · LSPosed API 102 · v0.6.1-beta3", 12, MUTED, false);
         subtitle.setPadding(0, dp(2), 0, dp(12));
         main.addView(subtitle);
 

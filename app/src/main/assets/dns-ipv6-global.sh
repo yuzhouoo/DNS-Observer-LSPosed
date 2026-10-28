@@ -1,0 +1,154 @@
+#!/system/bin/sh
+# DNS Observer IPv6 global unicast DNS53 trial (explicit opt-in only).
+# Dedicated chain, mark, route table and watchdog; do not touch existing Android rules.
+set -u
+MODE="${1:-}"; APP_UID="${2:-}"; TOKEN="${3:-}"
+CHAIN=DO6G061; TABLE=19754; PREF=15010
+MARK=0x40000000/0x40000000; PROXY=15456
+MARKER="/data/local/tmp/dobs6g61_${APP_UID}.run"
+case "$MODE" in install-probe|promote|recover|status|watch) ;; *) exit 2;; esac
+case "$APP_UID" in ''|*[!0-9]*) exit 2;; esac
+case "$TOKEN" in ''|*[!a-zA-Z0-9_-]*) exit 2;; esac
+IP6="$(command -v ip6tables 2>/dev/null || true)"
+IP="$(command -v ip 2>/dev/null || true)"
+[ -n "$IP6" ] && [ -n "$IP" ] || { echo 'PRECHECK_FAILED: ip/ip6tables missing' >&2; exit 3; }
+
+# Both probe and global rules are exclusively in locally-generated OUTPUT.
+# Exclude UID 0 for Root proxy outbound queries so the proxy cannot intercept itself.
+# Cover IPv6 global-unicast and ULA, not multicast/link-local/loopback.
+del_jumps() {
+    for proto in udp tcp; do
+        n=0
+        while "$IP6" -t mangle -C PREROUTING -i lo -p "$proto" --dport 53 -m mark --mark "$MARK" -j "$CHAIN" >/dev/null 2>&1; do
+            "$IP6" -t mangle -D PREROUTING -i lo -p "$proto" --dport 53 -m mark --mark "$MARK" -j "$CHAIN" >/dev/null 2>&1 || break
+            n=$((n+1)); [ "$n" -lt 8 ] || break
+        done
+        for subnet in '2000::/3' 'fc00::/7'; do
+            n=0
+            while "$IP6" -t mangle -C OUTPUT -d "$subnet" -p "$proto" --dport 53 -m owner --uid-owner "$APP_UID" -j MARK --set-xmark "$MARK" >/dev/null 2>&1; do
+                "$IP6" -t mangle -D OUTPUT -d "$subnet" -p "$proto" --dport 53 -m owner --uid-owner "$APP_UID" -j MARK --set-xmark "$MARK" >/dev/null 2>&1 || break
+                n=$((n+1)); [ "$n" -lt 8 ] || break
+            done
+            n=0
+            while "$IP6" -t mangle -C OUTPUT -d "$subnet" -p "$proto" --dport 53 -m owner ! --uid-owner 0 -j MARK --set-xmark "$MARK" >/dev/null 2>&1; do
+                "$IP6" -t mangle -D OUTPUT -d "$subnet" -p "$proto" --dport 53 -m owner ! --uid-owner 0 -j MARK --set-xmark "$MARK" >/dev/null 2>&1 || break
+                n=$((n+1)); [ "$n" -lt 8 ] || break
+            done
+        done
+    done
+}
+owned() { [ -f "$MARKER" ] || "$IP6" -t mangle -S "$CHAIN" >/dev/null 2>&1; }
+route_present() { "$IP" -6 route show table "$TABLE" 2>/dev/null | grep -Eq '^local ::/0 dev lo([[:space:]]|$)'; }
+rule_present() { "$IP" -6 rule show 2>/dev/null | grep -Eq '(^|[[:space:]])15010:.*fwmark 0x40000000/0x40000000.*lookup 19754([[:space:]]|$)'; }
+clear_owned() {
+    owned || return 0
+    del_jumps
+    "$IP6" -t mangle -F "$CHAIN" >/dev/null 2>&1 || true
+    "$IP6" -t mangle -X "$CHAIN" >/dev/null 2>&1 || true
+    if rule_present; then "$IP" -6 rule del pref "$PREF" fwmark "$MARK" lookup "$TABLE" >/dev/null 2>&1 || true; fi
+    if route_present; then "$IP" -6 route del local ::/0 dev lo table "$TABLE" >/dev/null 2>&1 || true; fi
+}
+verify_clean() {
+    bad=0
+    "$IP6" -t mangle -L PREROUTING -n >/dev/null 2>&1 || bad=1
+    "$IP6" -t mangle -L OUTPUT -n >/dev/null 2>&1 || bad=1
+    "$IP" -6 rule show >/dev/null 2>&1 || bad=1
+    for proto in udp tcp; do
+        "$IP6" -t mangle -C PREROUTING -i lo -p "$proto" --dport 53 -m mark --mark "$MARK" -j "$CHAIN" >/dev/null 2>&1 && bad=1
+        for subnet in '2000::/3' 'fc00::/7'; do
+            "$IP6" -t mangle -C OUTPUT -d "$subnet" -p "$proto" --dport 53 -m owner --uid-owner "$APP_UID" -j MARK --set-xmark "$MARK" >/dev/null 2>&1 && bad=1
+            "$IP6" -t mangle -C OUTPUT -d "$subnet" -p "$proto" --dport 53 -m owner ! --uid-owner 0 -j MARK --set-xmark "$MARK" >/dev/null 2>&1 && bad=1
+        done
+    done
+    "$IP6" -t mangle -S "$CHAIN" >/dev/null 2>&1 && bad=1
+    rule_present && bad=1
+    route_present && bad=1
+    if [ "$bad" -eq 0 ]; then echo 'VERIFY_CLEAN: global module rules and routes absent'; return 0; fi
+    echo 'VERIFY_FAILED: global module residue; manual cleanup required' >&2; return 1
+}
+case "$MODE" in
+ recover)
+    clear_owned
+    if verify_clean; then rm -f "$MARKER"; echo 'RECOVERED: verified clean'; else exit 11; fi
+    ;;
+ status)
+    echo 'OUTPUT/PREROUTING:'
+    "$IP6" -t mangle -L OUTPUT -n -v -x 2>&1 | grep -E '2000::/3|fc00::/7' || true
+    "$IP6" -t mangle -L PREROUTING -n -v -x 2>&1 | grep "$CHAIN" || true
+    "$IP6" -t mangle -L "$CHAIN" -n -v -x 2>&1 || true
+    "$IP" -6 rule show | grep '15010:' || true
+    "$IP" -6 route show table "$TABLE" 2>&1
+    ;;
+ install-probe)
+    # Never accept an existing marker, table, chain, pref or pre-used fwmark.
+    if "$IP6" -t mangle -S DO6TST55 >/dev/null 2>&1; then
+        echo 'PRECHECK_FAILED: legacy IPv6 pilot chain present; recover pilot first' >&2; exit 4
+    fi
+    if [ -f "$MARKER" ] || "$IP6" -t mangle -S "$CHAIN" >/dev/null 2>&1; then
+        echo 'PRECHECK_FAILED: previous global test exists' >&2; exit 4
+    fi
+    if "$IP" -6 rule show | grep -Eq '^[[:space:]]*15010:' ||
+       [ -n "$("$IP" -6 route show table "$TABLE" 2>/dev/null)" ]; then
+        echo 'PRECHECK_FAILED: reserved route/pref occupied' >&2; exit 4
+    fi
+    if "$IP6" -t mangle -S 2>/dev/null | grep -q '0x40000000'; then
+        echo 'PRECHECK_FAILED: reserved mark already used' >&2; exit 4
+    fi
+    "$IP6" -t mangle -m owner -h >/dev/null 2>&1 || { echo 'PRECHECK_FAILED: owner match unavailable' >&2; exit 4; }
+    "$IP6" -t mangle -j TPROXY -h >/dev/null 2>&1 || { echo 'PRECHECK_FAILED: TPROXY missing' >&2; exit 4; }
+    printf 'probe:%s\n' "$TOKEN" > "$MARKER" || exit 5
+    chmod 600 "$MARKER" || true
+    # Spawn watchdog before any routing changes.
+    /system/bin/sh "$0" watch "$APP_UID" "$TOKEN" </dev/null >/dev/null 2>&1 &
+    "$IP6" -t mangle -N "$CHAIN" || { clear_owned; exit 5; }
+    for proto in udp tcp; do
+        "$IP6" -t mangle -A "$CHAIN" -p "$proto" -j TPROXY --on-ip ::1 --on-port "$PROXY" --tproxy-mark "$MARK" || { clear_owned; exit 6; }
+    done
+    "$IP" -6 route add local ::/0 dev lo table "$TABLE" || { clear_owned; exit 7; }
+    "$IP" -6 rule add pref "$PREF" fwmark "$MARK" lookup "$TABLE" || { clear_owned; exit 8; }
+    for proto in udp tcp; do
+        "$IP6" -t mangle -I PREROUTING 1 -i lo -p "$proto" --dport 53 -m mark --mark "$MARK" -j "$CHAIN" || { clear_owned; exit 9; }
+        for subnet in '2000::/3' 'fc00::/7'; do
+            "$IP6" -t mangle -I OUTPUT 1 -d "$subnet" -p "$proto" --dport 53 -m owner --uid-owner "$APP_UID" -j MARK --set-xmark "$MARK" || { clear_owned; exit 10; }
+        done
+    done
+    echo 'INSTALLED_PROBE: App UID only, multi-destination original-dst selftest'
+    ;;
+ promote)
+    if [ "$(cat "$MARKER" 2>/dev/null)" != "probe:$TOKEN" ]; then
+        echo 'PRECHECK_FAILED: no owned probe session' >&2; exit 4
+    fi
+    for proto in udp tcp; do
+        for subnet in '2000::/3' 'fc00::/7'; do
+            "$IP6" -t mangle -C OUTPUT -d "$subnet" -p "$proto" --dport 53 -m owner --uid-owner "$APP_UID" -j MARK --set-xmark "$MARK" >/dev/null 2>&1 || { echo 'PRECHECK_FAILED: selftest rule missing' >&2; exit 4; }
+        done
+    done
+    # Add broad rule only on explicit user opt-in AFTER successful selftest.
+    # Root UID 0 excluded to prevent DNS forwarding recursion.
+    for proto in udp tcp; do
+        for subnet in '2000::/3' 'fc00::/7'; do
+            "$IP6" -t mangle -I OUTPUT 1 -d "$subnet" -p "$proto" --dport 53 -m owner ! --uid-owner 0 -j MARK --set-xmark "$MARK" || { clear_owned; exit 10; }
+        done
+    done
+    for proto in udp tcp; do
+        for subnet in '2000::/3' 'fc00::/7'; do
+            "$IP6" -t mangle -D OUTPUT -d "$subnet" -p "$proto" --dport 53 -m owner --uid-owner "$APP_UID" -j MARK --set-xmark "$MARK" || { clear_owned; exit 11; }
+        done
+    done
+    printf 'global:%s\n' "$TOKEN" > "$MARKER" || { clear_owned; exit 12; }
+    echo 'PROMOTED: globally scoped non-root IPv6 unicast DNS53, UID 0 excluded'
+    ;;
+ watch)
+    n=0
+    while [ "$n" -lt 180 ]; do
+        state="$(cat "$MARKER" 2>/dev/null)"
+        [ "$state" = "probe:$TOKEN" ] || [ "$state" = "global:$TOKEN" ] || exit 0
+        sleep 1; n=$((n+1))
+    done
+    state="$(cat "$MARKER" 2>/dev/null)"
+    if [ "$state" = "probe:$TOKEN" ] || [ "$state" = "global:$TOKEN" ]; then
+        clear_owned
+        if verify_clean; then rm -f "$MARKER"; fi
+    fi
+    ;;
+esac

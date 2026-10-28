@@ -142,6 +142,7 @@ public final class DnsIpv6PilotController {
     public static String start(Context ctx){
         Context app=ctx.getApplicationContext();
         synchronized(LOCK){
+            if(DnsIpv6GlobalController.isRunning())return "请先停止 IPv6 全局接管再启动 UID 隔离诊断";
             if(starting||(daemon!=null&&daemon.isAlive()))return "安全试运行已经启动或正在启动";
             starting=true;signals.clear();
             probes=0;udpOk.set(0);tcpOk.set(0);

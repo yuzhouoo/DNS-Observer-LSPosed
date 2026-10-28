@@ -33,7 +33,7 @@ public final class DnsControlActivity extends Activity {
     private TextView history;
     private LinearLayout speedResults;
     private volatile boolean measuring;
-    private TextView status, ipv6PilotLog;
+    private TextView status, ipv6PilotLog, ipv6GlobalLog;
     private Button speedHistoryToggle;
     private boolean historyExpanded;
 
@@ -67,6 +67,25 @@ public final class DnsControlActivity extends Activity {
         if(first>0)tail.append("已折叠 ").append(first).append(" 行历史日志；点击查看完整内容。\n");
         for(int i=first;i<lines.length;i++)if(!lines[i].isEmpty())tail.append(lines[i]).append('\n');
         ipv6PilotLog.setText(tail.length()==0?"暂无试运行日志":tail.toString().trim());
+    }
+    private void refreshGlobalPreview() {
+        if(ipv6GlobalLog==null)return;
+        String value=DnsIpv6GlobalController.report(this);
+        String[] lines=value.split("\n");
+        StringBuilder preview=new StringBuilder();
+        int begin=Math.max(0,lines.length-5);
+        if(begin>0)preview.append("已折叠 ").append(begin).append(" 行，点击查看完整日志。\n");
+        for(int i=begin;i<lines.length;i++)if(!lines[i].isEmpty())preview.append(lines[i]).append('\n');
+        ipv6GlobalLog.setText(preview.length()==0?"暂无全局 IPv6 记录":preview.toString().trim());
+    }
+    private void showCompleteGlobalLog(){
+        String value=DnsIpv6GlobalController.report(this);
+        ScrollView scroll=new ScrollView(this);
+        TextView detail=selectable(label(value.isEmpty()?"暂无日志":value,12,FG));
+        detail.setPadding(dp(14),dp(12),dp(14),dp(12));scroll.addView(detail);
+        new AlertDialog.Builder(this).setTitle("IPv6 全局接管 · 完整日志")
+          .setView(scroll).setNeutralButton("复制全部",(d,w)->copyText(value,"IPv6 全局日志"))
+          .setPositiveButton("关闭",null).show();
     }
     private void showCompletePilotLog() {
         String report=pilotLog();
@@ -123,7 +142,7 @@ public final class DnsControlActivity extends Activity {
         LinearLayout root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(20),dp(16),dp(20),dp(24));scroll.addView(root);
         setContentView(scroll);
-        root.addView(label("DNS 接管 · v0.6.0-beta2",23,FG));
+        root.addView(label("DNS 接管 · v0.6.1-beta3",23,FG));
         root.addView(label("保留现有 LSPosed DNS 监控；接管仅作用于常规 UDP/TCP 53。\n需要 Root。默认关闭、不随系统开机启动。",13,SECOND));
         status=selectable(label("正在检查状态…",15,FG));root.addView(status);
         button("复制当前接管状态",root).setOnClickListener(v->copyVisibleText(status,"接管状态"));
@@ -143,14 +162,53 @@ public final class DnsControlActivity extends Activity {
         speedResults=new LinearLayout(this);speedResults.setOrientation(LinearLayout.VERTICAL);
         root.addView(speedResults);
         speedResults.addView(label("未开始测速；点击上方按钮查看每个 IP 的独立延迟。",13,SECOND));
-        root.addView(label("IPv6 TPROXY 限时试运行（beta2）",18,FG));
-        root.addView(label("仅 DNS Observer 本身 UID → 2001:db8:ffff::53:53 的查询。不劫持系统或其他 App。手动启动后可反复测试 UDP/TCP；Root 服务最长 145 秒，180 秒独立规则看门狗。可与原 IPv4 接管独立使用。",12,SECOND));
+        root.addView(label("IPv6 DNS53 接管 · 全局试用（beta3）",18,FG));
+        root.addView(label("手动启用后覆盖普通 App / 非 Root UID 的 IPv6 全球单播与 ULA UDP/TCP 53；不拦截 DoH/DoT、链路本地、Root UID 0。先完成本 App 对两个不同 IPv6 地址的 UDP/TCP 自检，任一失败立即恢复。最长 145 秒，180 秒独立看门狗。",12,SECOND));
+        ipv6GlobalLog=selectable(label("",12,FG));root.addView(ipv6GlobalLog);
+        refreshGlobalPreview();
+        button("查看 / 复制全局 IPv6 日志",root).setOnClickListener(v->showCompleteGlobalLog());
+        button("清空全局 IPv6 日志",root).setOnClickListener(v->{
+            DnsIpv6GlobalController.clearLog(this);refreshGlobalPreview();
+            Toast.makeText(this,"全局日志已清空，不影响代理",Toast.LENGTH_SHORT).show();
+        });
+        button("开启 IPv6 全局 DNS53（145 秒）",root).setOnClickListener(v->
+            new AlertDialog.Builder(this).setTitle("确认扩大 IPv6 DNS53 接管范围？")
+             .setMessage("这会在 145 秒内拦截普通 App 的 IPv6 UDP/TCP 53 查询（不含 Root UID），可能使部分应用 DNS 超时。仅对本 App 先做两个目标的四项自检，通过才开放。IPv4 不变，可随时停止；180 秒看门狗恢复。请确保能够使用 Root 终端紧急恢复。")
+             .setNegativeButton("取消",null).setPositiveButton("启用",(d,w)->{
+                 persist();status.setText("正在预检上游、原始目标地址和透明回包…");
+                 new Thread(()->{
+                     String result=DnsIpv6GlobalController.start(getApplicationContext());
+                     ui.post(()->{if(!isDestroyed()){status.setText(result);refreshGlobalPreview();}});
+                 },"DNS-global-start").start();
+             }).show());
+        button("关闭 IPv6 全局接管并核查恢复",root).setOnClickListener(v->{
+            status.setText("正在停止 IPv6 代理并清理独立规则…");
+            new Thread(()->{
+                String result=DnsIpv6GlobalController.stop(getApplicationContext());
+                ui.post(()->{if(!isDestroyed()){status.setText(result);refreshGlobalPreview();}});
+            },"DNS-global-stop").start();
+        });
+        button("查看 IPv6 全局规则状态",root).setOnClickListener(v->new Thread(()->{
+            String result=DnsIpv6GlobalController.status(getApplicationContext());
+            ui.post(()->{if(!isDestroyed()){status.setText(result);refreshGlobalPreview();}});
+        },"DNS-global-status").start());
+
+        Button advancedToggle=button("展开 UID 隔离诊断（高级）",root);
+        LinearLayout advanced=new LinearLayout(this);advanced.setOrientation(LinearLayout.VERTICAL);
+        advanced.setVisibility(View.GONE);root.addView(advanced);
+        advancedToggle.setOnClickListener(v->{
+            boolean show=advanced.getVisibility()!=View.VISIBLE;
+            advanced.setVisibility(show?View.VISIBLE:View.GONE);
+            advancedToggle.setText(show?"收起 UID 隔离诊断":"展开 UID 隔离诊断（高级）");
+        });
+        advanced.addView(label("IPv6 TPROXY 限时 UID 隔离诊断",18,FG));
+        advanced.addView(label("仅 DNS Observer 本身 UID → 2001:db8:ffff::53:53 的查询。不劫持系统或其他 App。手动启动后可反复测试 UDP/TCP；Root 服务最长 145 秒，180 秒独立规则看门狗。可与原 IPv4 接管独立使用。",12,SECOND));
         ipv6PilotLog=selectable(label("",12,FG));
-        root.addView(ipv6PilotLog);
+        advanced.addView(ipv6PilotLog);
         refreshPilotPreview();
-        button("查看完整 IPv6 试运行日志",root).setOnClickListener(v->showCompletePilotLog());
-        button("复制完整 IPv6 试运行日志",root).setOnClickListener(v->copyText(pilotLog(),"IPv6 试运行日志"));
-        button("清空 IPv6 试运行日志",root).setOnClickListener(v->
+        button("查看完整 IPv6 试运行日志",advanced).setOnClickListener(v->showCompletePilotLog());
+        button("复制完整 IPv6 试运行日志",advanced).setOnClickListener(v->copyText(pilotLog(),"IPv6 试运行日志"));
+        button("清空 IPv6 试运行日志",advanced).setOnClickListener(v->
             new AlertDialog.Builder(this).setTitle("清空已保存的试运行日志？")
                 .setMessage("仅清除日志文字；不停止运行中的服务，不修改防火墙规则，也不清除 DNS 监控数据库。运行期间新消息仍会继续记录。")
                 .setNegativeButton("取消",null)
@@ -160,7 +218,7 @@ public final class DnsControlActivity extends Activity {
                     refreshPilotPreview();
                     Toast.makeText(this,"日志已清空",Toast.LENGTH_SHORT).show();
                 }).show());
-        button("启动限时 IPv6 DNS 试运行",root).setOnClickListener(v->
+        button("启动限时 IPv6 DNS 试运行",advanced).setOnClickListener(v->
             new AlertDialog.Builder(this).setTitle("确认启动受限 IPv6 TPROXY 试运行？")
                 .setMessage("仅本 App UID 到文档 IPv6 地址/53；预检主从备上游后启动 Root UDP/TCP 代理。最长 145 秒，180 秒防护恢复，不能代表全机接管。")
                 .setNegativeButton("取消",null).setPositiveButton("开始",(d,w)->{
@@ -170,21 +228,21 @@ public final class DnsControlActivity extends Activity {
                         ui.post(()->{if(!isDestroyed()){status.setText(result);refreshPilotPreview();}});
                     },"DNS-Pilot-start").start();
                 }).show());
-        button("IPv6 试运行：再次查询 UDP/TCP",root).setOnClickListener(v->new Thread(()->{
+        button("IPv6 试运行：再次查询 UDP/TCP",advanced).setOnClickListener(v->new Thread(()->{
             String result=DnsIpv6PilotController.test(getApplicationContext());
             ui.post(()->{if(!isDestroyed()){status.setText(result);refreshPilotPreview();}});
         },"DNS-Pilot-test").start());
-        button("停止 IPv6 试运行并核查恢复",root).setOnClickListener(v->new Thread(()->{
+        button("停止 IPv6 试运行并核查恢复",advanced).setOnClickListener(v->new Thread(()->{
             String result=DnsIpv6PilotController.stop(getApplicationContext());
             ui.post(()->{if(!isDestroyed()){status.setText(result);refreshPilotPreview();}});
         },"DNS-Pilot-stop").start());
-        button("刷新试运行状态",root).setOnClickListener(v->refreshPilotPreview());
-        button("IPv6 试运行 · 12 次并发请求压力自检",root).setOnClickListener(v->
+        button("刷新试运行状态",advanced).setOnClickListener(v->refreshPilotPreview());
+        button("IPv6 试运行 · 12 次并发请求压力自检",advanced).setOnClickListener(v->
             new Thread(()->{
                 String result=DnsIpv6PilotController.stress(getApplicationContext());
                 ui.post(()->{if(!isDestroyed()){status.setText(result);refreshPilotPreview();}});
             },"DNS-Pilot-stress").start());
-        button("紧急核查 / 恢复 IPv6 临时规则",root).setOnClickListener(v->
+        button("紧急核查 / 恢复 IPv6 临时规则",advanced).setOnClickListener(v->
             new Thread(()->{
                 String result;
                 if(DnsIpv6PilotController.isRunning()){
@@ -434,6 +492,7 @@ public final class DnsControlActivity extends Activity {
             historyUpdated=System.currentTimeMillis();refreshHistory();
         }
         refreshPilotPreview();
+        refreshGlobalPreview();
         ui.postDelayed(this,3500);
     }};
     @Override protected void onResume(){super.onResume();visible=true;ui.removeCallbacks(refresh);ui.postDelayed(refresh,1200);}
