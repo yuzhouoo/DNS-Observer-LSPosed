@@ -26,8 +26,11 @@ public final class DnsIpv6RootProbe {
         System.out.flush();
     }
     public static void main(String[] args) {
-        if(args.length!=3 || !args[0].matches("[a-zA-Z0-9_-]{1,64}")
-                || !args[1].matches("UDP|TCP") || !args[2].matches("DIRECT|LOOP|LOCAL|DNS53|DNSREPLY")) {
+        boolean upstreamStage=args.length==5 && "UPSTREAM".equals(args[2]);
+        if((args.length!=3 && !upstreamStage) || args.length<3 ||
+                !args[0].matches("[a-zA-Z0-9_-]{1,64}") ||
+                !args[1].matches("UDP|TCP") ||
+                !(args[2].matches("DIRECT|LOOP|LOCAL|DNS53|DNSREPLY") || upstreamStage)) {
             say("ERROR bad-arguments");return;
         }
         String proto=args[1],stage=args[2];
@@ -56,7 +59,7 @@ public final class DnsIpv6RootProbe {
                         StructTimeval.fromMillis(4000));
             }
             int size;
-            if(("DNS53".equals(stage)||"DNSREPLY".equals(stage)) && tcp) {
+            if(("DNS53".equals(stage)||"DNSREPLY".equals(stage)||"UPSTREAM".equals(stage)) && tcp) {
                 byte[] frame=new byte[2];int have=0;
                 while(have<2) { int n=Os.read(accepted,frame,have,2-have); if(n<=0)throw new IllegalStateException("DNS TCP short length");have+=n; }
                 int want=((frame[0]&255)<<8)|(frame[1]&255);
@@ -64,16 +67,28 @@ public final class DnsIpv6RootProbe {
                 have=0;
                 while(have<want) { int n=Os.read(accepted,data,have,want-have);if(n<=0)throw new IllegalStateException("DNS TCP truncated frame");have+=n; }
                 size=have;
-            } else if("DNSREPLY".equals(stage) && !tcp) {
+            } else if(("DNSREPLY".equals(stage)||"UPSTREAM".equals(stage)) && !tcp) {
                 size=Os.recvfrom(listen,data,0,data.length,0,client);
             } else size=Os.read(tcp?accepted:listen,data,0,data.length);
-            if("DNS53".equals(stage)||"DNSREPLY".equals(stage)) {
+            if("DNS53".equals(stage)||"DNSREPLY".equals(stage)||"UPSTREAM".equals(stage)) {
                 byte[] query=Arrays.copyOf(data,size);
                 if(!DnsPacket.validQuestion(query)) {
                     outcome="RECV_MISMATCH protocol="+proto+" stage="+stage+" invalid_question bytes="+size;
-                } else if("DNSREPLY".equals(stage)) {
-                    // Offline, deterministic answer. No external DNS connection.
-                    byte[] reply=DnsPacket.servfail(query);
+                } else if("DNSREPLY".equals(stage)||"UPSTREAM".equals(stage)) {
+                    byte[] reply;
+                    if("UPSTREAM".equals(stage)){
+                        // A pre-resolved numeric IP: never call netd to resolve an upstream
+                        // hostname while the experimental DNS interception rule is present.
+                        if(!args[3].matches("[0-9a-fA-F:.]+") || !args[3].contains(".") && !args[3].contains(":")
+                                || !args[4].matches("[0-9]{1,5}"))
+                            throw new IllegalArgumentException("Upstream literal IP and port required");
+                        InetAddress upstream=InetAddress.getByName(args[3]);
+                        int port=Integer.parseInt(args[4]);
+                        if(!DnsUpstreamExchange.permittedUpstream(upstream))
+                            throw new IllegalArgumentException("Disallowed upstream IP");
+                        reply=DnsUpstreamExchange.query(upstream,port,proto,query);
+                        say("UPSTREAM_OK protocol="+proto+" rcode="+(reply[3]&15)+" bytes="+reply.length);
+                    } else reply=DnsPacket.servfail(query);
                     if(reply==null)throw new IllegalStateException("Cannot construct DNS response");
                     if(tcp) {
                         byte[] framed=new byte[reply.length+2];
@@ -96,7 +111,7 @@ public final class DnsIpv6RootProbe {
                         int n=Os.sendto(replySocket,reply,0,reply.length,0,client.getAddress(),client.getPort());
                         if(n!=reply.length)throw new IllegalStateException("UDP DNS send truncated "+n);
                     }
-                    outcome="RECV_OK protocol="+proto+" stage=DNSREPLY dns_question_valid=1 reply_sent=1 bytes="+size;
+                    outcome="RECV_OK protocol="+proto+" stage="+stage+" dns_question_valid=1 reply_sent=1 bytes="+size;
                 } else outcome="RECV_OK protocol="+proto+" stage=DNS53 dns_question_valid=1 bytes="+size;
             } else {
                 String expected="DNS6-"+proto+"-"+stage+"-"+args[0];
