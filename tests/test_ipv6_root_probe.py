@@ -11,6 +11,12 @@ assert 'RECV_OK protocol=' in h
 assert 'new DatagramSocket(null)' in e # sending only, never fallback receiver
 assert 'install-loop' in e and 'install-local' in e and 'install-dns' in e
 assert 'DnsPacket.probeQuestion()' in e and 'DnsPacket.validQuestion(query)' in h
+assert 'DNSREPLY' in e and 'DNSREPLY' in h
+assert 'Os.recvfrom(listen,data,0,data.length,0,client)' in h
+assert 'Os.sendto(replySocket,reply' in h
+assert 'Os.bind(replySocket,InetAddress.getByName(DOC_IP),DNS_PORT)' in h
+assert 'DataInputStream in=new DataInputStream(tcp.getInputStream())' in e
+assert 'Arrays.equals(DnsPacket.servfail(payload)' in e
 assert e.index('"UDP","DIRECT"') < e.index('"install-loop"')
 assert e.index('loopUdp=single') < e.index('"install-local"')
 assert 'if(!clean || !loopUdp || !loopTcp)' in e

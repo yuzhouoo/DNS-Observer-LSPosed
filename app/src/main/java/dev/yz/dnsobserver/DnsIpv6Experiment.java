@@ -9,6 +9,9 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.io.DataInputStream;
+import java.net.SocketTimeoutException;
+import java.util.Arrays;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
@@ -95,14 +98,23 @@ public final class DnsIpv6Experiment {
             if(line.contains("DNS6PROBE "+expected))return "OK";
         }
     }
-    private static void send(String proto,String stage,String token,InetAddress address,int port) throws Exception {
-        boolean dns53="DNS53".equals(stage);
+    private static boolean send(String proto,String stage,String token,InetAddress address,int port) throws Exception {
+        boolean dns53="DNS53".equals(stage)||"DNSREPLY".equals(stage);
+        boolean replyTest="DNSREPLY".equals(stage);
         byte[] payload=dns53?DnsPacket.probeQuestion():
                 ("DNS6-"+proto+"-"+stage+"-"+token).getBytes(StandardCharsets.US_ASCII);
         if("UDP".equals(proto)){
             try(DatagramSocket socket=new DatagramSocket(null)){
                 socket.bind(new InetSocketAddress(InetAddress.getByName("::"),0));
                 socket.send(new DatagramPacket(payload,payload.length,address,port));
+                if(replyTest) {
+                    socket.setSoTimeout(3000);
+                    byte[] buf=new byte[2048];
+                    DatagramPacket received=new DatagramPacket(buf,buf.length);
+                    socket.receive(received);
+                    return received.getAddress().equals(address) && received.getPort()==53 &&
+                            Arrays.equals(DnsPacket.servfail(payload),Arrays.copyOf(buf,received.getLength()));
+                }
             }
         } else {
             try(Socket tcp=new Socket()){
@@ -110,22 +122,42 @@ public final class DnsIpv6Experiment {
                 if(dns53){tcp.getOutputStream().write((payload.length>>>8)&255);tcp.getOutputStream().write(payload.length&255);}
                 tcp.getOutputStream().write(payload);
                 tcp.getOutputStream().flush();
+                if(replyTest) {
+                    tcp.setSoTimeout(3000);
+                    DataInputStream in=new DataInputStream(tcp.getInputStream());
+                    int len=in.readUnsignedShort();
+                    if(len<12 || len>2048)throw new IllegalStateException("Invalid DNS TCP response length "+len);
+                    byte[] got=new byte[len];in.readFully(got);
+                    return Arrays.equals(DnsPacket.servfail(payload),got);
+                }
             }
         }
+        return true;
     }
     private static boolean single(Context ctx,String token,String proto,String stage,StringBuilder report) {
         java.lang.Process proc=null;
         BlockingQueue<String> queue=new LinkedBlockingQueue<>();
-        String name=proto+" "+("DIRECT".equals(stage)?"基础回环":("LOOP".equals(stage)?"TPROXY 回环":("DNS53".equals(stage)?"App 专属 DNS53 请求捕获":"本机非回环")));
+        String name=proto+" "+("DIRECT".equals(stage)?"基础回环":("LOOP".equals(stage)?"TPROXY 回环":("DNS53".equals(stage)?"App 专属 DNS53 请求捕获":("DNSREPLY".equals(stage)?"DNS53 应答回传":"本机非回环"))));
         try {
             proc=listener(ctx,token,proto,stage,queue);
             String ready=waitFor(queue,"READY",6000,report);
             if(!"OK".equals(ready)){report.append(name).append("：透明 Socket 未就绪（").append(ready).append("）\n");return false;}
-            InetAddress target=InetAddress.getByName(("LOCAL".equals(stage)||"DNS53".equals(stage))?DOC_IP:"::1");
-            int sendPort="DIRECT".equals(stage)?("TCP".equals(proto)?DIRECT_TCP_PORT:LISTEN_PORT):("DNS53".equals(stage)?53:TEST_PORT);
-            send(proto,stage,token,target,sendPort);
+            InetAddress target=InetAddress.getByName(("LOCAL".equals(stage)||"DNS53".equals(stage)||"DNSREPLY".equals(stage))?DOC_IP:"::1");
+            int sendPort="DIRECT".equals(stage)?("TCP".equals(proto)?DIRECT_TCP_PORT:LISTEN_PORT):(("DNS53".equals(stage)||"DNSREPLY".equals(stage))?53:TEST_PORT);
+            boolean replyTest="DNSREPLY".equals(stage);
+            boolean clientReply=false;
+            try {
+                clientReply=send(proto,stage,token,target,sendPort);
+            } catch(Exception replyError) {
+                if(!replyTest)throw replyError;
+                report.append(name).append(" · 客户端接收异常：")
+                    .append(replyError.getClass().getSimpleName()).append(" ")
+                    .append(replyError.getMessage()).append('\n');
+            }
             String observed=waitFor(queue,"RECV_OK",5000,report);
-            boolean success="OK".equals(observed);
+            boolean success="OK".equals(observed) && (!replyTest || clientReply);
+            if(replyTest)report.append(name).append(" · 客户端验证：")
+                .append(clientReply?"SERVFAIL ID/源地址匹配":"未通过").append('\n');
             report.append(name).append("：").append(success?"成功":"未通过（"+observed+"）").append('\n');
             return success;
         }catch(Exception e){report.append(name).append("：异常 ").append(e.getClass().getSimpleName())
@@ -160,7 +192,7 @@ public final class DnsIpv6Experiment {
     }
     public static String run(Context ctx){
         String token=UUID.randomUUID().toString().replace("-","");
-        StringBuilder report=new StringBuilder("IPv6 TPROXY 分阶段现场实验 v0.5.7\n先测合成流量，再仅匹配本 App UID 发往文档地址的 DNS53 请求；不拦截其他 App，不返回 DNS 应答。\n");
+        StringBuilder report=new StringBuilder("IPv6 TPROXY 分阶段现场实验 v0.5.8\n先测 DNS 请求捕获，再仅向本 App 返回离线 SERVFAIL 应答；不拦截其他 App，不请求公网 DNS。\n");
         boolean clean=true;
         try {
             boolean udp=single(ctx,token,"UDP","DIRECT",report);
@@ -187,20 +219,32 @@ public final class DnsIpv6Experiment {
                     } finally {clean=cleanup(ctx,report);}
                     if(!clean)report.append("注意：本机路由阶段存在清理异常，请点击一键恢复并核查！\n");
                     if(clean && localUdp && localTcp) {
+                        boolean captureOk=false;
                         try {
                             report.append(root(ctx,"install-dns",token,10)).append('\n');
                             boolean dnsUdp=single(ctx,token,"UDP","DNS53",report);
                             boolean dnsTcp=single(ctx,token,"TCP","DNS53",report);
                             stageStatus(ctx,token,report);
                             report.append("DNS53 报文捕获：").append(dnsUdp&&dnsTcp?"UDP/TCP 全部通过":"存在失败").append('\n');
+                            captureOk=dnsUdp&&dnsTcp;
                         } finally {clean=cleanup(ctx,report);}
+                        if(clean && captureOk) {
+                            try {
+                                report.append(root(ctx,"install-dns",token,10)).append('\n');
+                                boolean replyUdp=single(ctx,token,"UDP","DNSREPLY",report);
+                                boolean replyTcp=single(ctx,token,"TCP","DNSREPLY",report);
+                                stageStatus(ctx,token,report);
+                                report.append("IPv6 DNS 回包实验：")
+                                      .append(replyUdp&&replyTcp?"UDP/TCP 全部通过":"存在失败").append('\n');
+                            } finally {clean=cleanup(ctx,report);}
+                        } else report.append("DNS53 请求捕获或残留核对未通过；跳过回包验证。\n");
                     } else report.append("前置本机流量或清理检查失败，跳过 DNS53 阶段。\n");
                 }
             }
         }catch(Throwable e){report.append("实验异常：").append(e.getClass().getSimpleName())
                 .append(' ').append(e.getMessage()).append('\n');}
         finally{cleanup(ctx,report);}
-        return report.append("结论边界：DNS53 只检验本 App 发往文档地址的真实 DNS 查询能否到达透明 Socket；尚未验证响应返回、上游转发或全机接管。")
+        return report.append("结论边界：只测试本 App UID 和文档 IPv6 目标的离线 DNS SERVFAIL 请求/回包；即使成功也不代表上游 DNS 转发或全机接管可用。")
                 .toString();
     }
 }

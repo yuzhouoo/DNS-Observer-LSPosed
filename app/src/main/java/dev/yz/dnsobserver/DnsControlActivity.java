@@ -96,7 +96,7 @@ public final class DnsControlActivity extends Activity {
         LinearLayout root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(20),dp(16),dp(20),dp(24));scroll.addView(root);
         setContentView(scroll);
-        root.addView(label("DNS 接管 · v0.5.7",23,FG));
+        root.addView(label("DNS 接管 · v0.5.8",23,FG));
         root.addView(label("保留现有 LSPosed DNS 监控；接管仅作用于常规 UDP/TCP 53。\n需要 Root。默认关闭、不随系统开机启动。",13,SECOND));
         status=selectable(label("正在检查状态…",15,FG));root.addView(status);
         button("复制当前接管状态",root).setOnClickListener(v->copyVisibleText(status,"接管状态"));
@@ -120,15 +120,15 @@ public final class DnsControlActivity extends Activity {
         speedResults=new LinearLayout(this);speedResults.setOrientation(LinearLayout.VERTICAL);
         root.addView(speedResults);
         speedResults.addView(label("未开始测速；点击上方按钮查看每个 IP 的独立延迟。",13,SECOND));
-        root.addView(label("IPv6 TPROXY 分阶段实验：先验证回环和本机非回环 UDP/TCP，再仅捕获本 App UID 发往文档地址端口 53 的标准 DNS 请求。不会接管其他应用 DNS，不返回 DNS 应答；35 秒自动清理并核对残留。",12,SECOND));
+        root.addView(label("IPv6 TPROXY 分阶段实验：回环、本机非回环、UDP/TCP DNS53 捕获、离线 SERVFAIL 应答回传。只影响本 App 发往单个文档 IPv6 地址的实验查询；35 秒守护清理和残留核验。",12,SECOND));
         ipv6ExperimentResult=selectable(label(
                 prefs.getString("ipv6_last_report","IPv6 TPROXY 实验尚未运行。"),12,FG));
         root.addView(ipv6ExperimentResult);
         root.addView(label("实验日志可长按选择文本，也可点下面按钮一次复制完整原始输出。",12,SECOND));
         button("复制完整 IPv6 调试日志",root).setOnClickListener(v->copyVisibleText(ipv6ExperimentResult,"IPv6 调试日志"));
-        button("验证 IPv6 TPROXY · UDP/TCP + 本 App DNS53 捕获",root).setOnClickListener(v ->
+        button("验证 IPv6 TPROXY · UDP/TCP DNS53 请求与应答",root).setOnClickListener(v ->
             new AlertDialog.Builder(this).setTitle("运行 IPv6 TPROXY 隔离实验？")
-                .setMessage("三阶段实验：先测试回环、本机非回环，再匹配本 App UID 发往 2001:db8:ffff::53 的 UDP/TCP DNS53 请求。只验证捕获，不提供 DNS 应答；不会拦截其他 App 的 53 端口。35 秒超时清理并提供手动恢复。运行前请停止 DNS 接管。")
+                .setMessage("分阶段实验：回环、本机非回环、App 专属 DNS53 捕获；最后通过透明 Socket 返回离线 SERVFAIL，检查 UDP/TCP 客户端是否收到源地址和 DNS ID 正确的应答。只匹配本 App UID 和文档地址，不接管其他 App；35 秒守护恢复。运行前请停止 DNS 接管。")
                 .setNegativeButton("取消",null)
                 .setPositiveButton("开始验证",(d,w)-> {
                     if(ipv6ExperimentRunning){
