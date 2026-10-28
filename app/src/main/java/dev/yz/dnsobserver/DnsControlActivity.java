@@ -67,7 +67,7 @@ public final class DnsControlActivity extends Activity {
         LinearLayout root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(20),dp(16),dp(20),dp(24));scroll.addView(root);
         setContentView(scroll);
-        root.addView(label("DNS 接管 · v0.5.2",23,FG));
+        root.addView(label("DNS 接管 · v0.5.3",23,FG));
         root.addView(label("保留现有 LSPosed DNS 监控；接管仅作用于常规 UDP/TCP 53。\n需要 Root。默认关闭、不随系统开机启动。",13,SECOND));
         status=label("正在检查状态…",15,FG);root.addView(status);
         host=field(root,"主 DNS 域名（不带协议、端口）",prefs.getString("host",""));
@@ -93,7 +93,7 @@ public final class DnsControlActivity extends Activity {
         root.addView(label("IPv6 TPROXY 实验（仅 ::1 回环、特殊端口 15453，不接管真实 DNS）：实验规则 20 秒自动清理，可随时一键恢复。",12,SECOND));
         ipv6ExperimentResult=label("IPv6 TPROXY 实验尚未运行。",12,SECOND);
         root.addView(ipv6ExperimentResult);
-        button("验证 IPv6 TPROXY · 限时隔离实验",root).setOnClickListener(v ->
+        button("验证 IPv6 TPROXY · Root 透明 Socket 隔离实验",root).setOnClickListener(v ->
             new AlertDialog.Builder(this).setTitle("运行 IPv6 TPROXY 隔离实验？")
                 .setMessage("实验只临时匹配 IPv6 回环 ::1:15453，不修改 Android 路由、现有 fwmark、DNS 53 或系统规则。即使安装成功也不代表真实 DNS 已接管。20 秒超时清理，并提供手动恢复。")
                 .setNegativeButton("取消",null)

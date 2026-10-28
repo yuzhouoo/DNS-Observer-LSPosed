@@ -1,3 +1,13 @@
+# DNS Observer v0.5.3 — IPv6 TPROXY Root 透明 Socket 验证
+
+- v0.5.2 实测 TPROXY 计数器 pkts=1 但 IPV6_TRANSPARENT socket 不可用。本版将 socket 创建与 UDP 监听移至经 KernelSU `su` 启动的独立 `app_process`，不再由普通 APP 权限创建，也不再使用普通 DatagramSocket 假装可测 TPROXY。
+- 先验证 Root + IPV6_TRANSPARENT `::1:15454` 监听，然后发送普通 IPv6 回环包，成功才安装隔离的 TPROXY PREROUTING 跳转，再发送 `::1:15453` 测试包。分别记录 ROOT EUID、实际错误 errno、普通回环与 TPROXY 的接收结果、PREROUTING 和 TPROXY 链命中计数。
+- 不创建 / 更改 Android 策略路由、fwmark 规则、系统防火墙链；只对 ::1 测试端口安装最多 20 秒的隔离链。无论异常/正常，尝试调用原有 recover；另保留手动清理按钮和 20 秒 Root 守护程序。
+- 使用 Android 自带 `/system/bin/app_process` 从已安装只读 APK 运行 Root 探针；不复制 ELF 到 `/data/local/tmp`，不需要安装 NDK。若当前 KernelSU/SELinux 禁止启动 app_process 或访问 APK，报告精确错误，不能以此否定 TPROXY 内核支持。
+- **这是隔离诊断版**：成功也不代表本机 `OUTPUT` 的外网 IPv6 53 流量已实现透明接管；真实接管需另行实现和验证完整流量路径。
+
+---
+
 # DNS Observer v0.5.2 — IPv6 NAT 自动降级 + 隔离 TPROXY 现场验证
 
 - 用户的 OnePlus 12 / Android 16 6.1.141 内核报告 `# CONFIG_IP6_NF_NAT is not set`、`# CONFIG_NF_TABLES is not set`、`CONFIG_NF_TPROXY_IPV6=y`，因此旧版 IPv6 NAT REDIRECT 不可能正常工作。

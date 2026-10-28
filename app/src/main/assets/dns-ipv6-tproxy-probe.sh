@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# DNS Observer 0.5.2: ISOLATED IPv6 TPROXY experiment, NOT a DNS 53 interceptor.
+# DNS Observer 0.5.3: ISOLATED IPv6 TPROXY experiment, NOT a DNS 53 interceptor.
 # Changes only our chain DO6TST53 and two narrow loopback/15453 PREROUTING jumps.
 # Never changes routing tables, Android fwmarks, OUTPUT, or system chains.
 set -u
@@ -30,6 +30,9 @@ case "$MODE" in
     echo 'RECOVERED: isolated IPv6 test rules removed (no route change)'
     ;;
   status)
+    echo 'PREROUTING rule match:'
+    "$IP6" -t mangle -L PREROUTING -n -v -x 2>&1 | grep "$CHAIN" || true
+    echo 'TPROXY target match:'
     "$IP6" -t mangle -L "$CHAIN" -n -v -x 2>&1
     ;;
   install)
