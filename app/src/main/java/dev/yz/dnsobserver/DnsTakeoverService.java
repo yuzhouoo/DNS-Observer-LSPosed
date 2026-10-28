@@ -1,0 +1,195 @@
+package dev.yz.dnsobserver;
+
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.Service;
+import android.content.Context;
+import android.content.Intent;
+import android.content.SharedPreferences;
+import android.os.Build;
+import android.os.IBinder;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Locale;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
+/** One persistent user-controlled lifecycle for IPv4 NAT and IPv6 TPROXY.
+ * No time-based rule removal. Manual OFF overrides boot and auto-repair. */
+public final class DnsTakeoverService extends Service {
+    public static final String ACTION_START="dev.yz.dnsobserver.TAKEOVER_START";
+    public static final String ACTION_STOP="dev.yz.dnsobserver.TAKEOVER_STOP";
+    public static final String EVENT_LOG="takeover_events";
+    private final ExecutorService io=Executors.newSingleThreadExecutor();
+    private volatile boolean stopped=true, monitoring;
+    private volatile boolean expect4,expect6;
+    private boolean fault4,fault6;
+    private static final Object EVENTS_LOCK=new Object();
+
+    public static void event(Context ctx,String message) {
+        synchronized(EVENTS_LOCK) {
+            SharedPreferences prefs=ctx.getSharedPreferences(DnsForwardService.PREFS,MODE_PRIVATE);
+            String when=new SimpleDateFormat("MM-dd HH:mm:ss",Locale.getDefault()).format(new Date());
+            String value=prefs.getString(EVENT_LOG,"")+when+"  "+message+"\n";
+            if(value.length()>16000)value="[更早记录已截断]\n"+value.substring(value.length()-14500);
+            prefs.edit().putString(EVENT_LOG,value).apply();
+        }
+    }
+    public static void clearEvents(Context ctx) {
+        synchronized(EVENTS_LOCK) {
+            ctx.getSharedPreferences(DnsForwardService.PREFS,MODE_PRIVATE)
+                    .edit().remove(EVENT_LOG).commit();
+        }
+    }
+    public static String events(Context ctx) {
+        return ctx.getSharedPreferences(DnsForwardService.PREFS,MODE_PRIVATE)
+                .getString(EVENT_LOG,"");
+    }
+    public static void requestStart(Context ctx) {
+        Intent i=new Intent(ctx,DnsTakeoverService.class).setAction(ACTION_START);
+        ctx.startForegroundService(i);
+    }
+    public static void requestStop(Context ctx) {
+        Context app=ctx.getApplicationContext();
+        // Disable recovery BEFORE posting the stop action, even if the service is busy.
+        app.getSharedPreferences(DnsForwardService.PREFS,MODE_PRIVATE).edit()
+                .putBoolean("takeover_enabled",false).commit();
+        app.startService(new Intent(app,DnsTakeoverService.class).setAction(ACTION_STOP));
+    }
+    @Override public IBinder onBind(Intent intent){return null;}
+    private SharedPreferences prefs(){return getSharedPreferences(DnsForwardService.PREFS,MODE_PRIVATE);}
+    private void foreground(){
+        NotificationManager nm=(NotificationManager)getSystemService(NOTIFICATION_SERVICE);
+        if(Build.VERSION.SDK_INT>=26&&nm!=null)nm.createNotificationChannel(
+                new NotificationChannel("dns_takeover", "DNS Observer 接管状态",NotificationManager.IMPORTANCE_LOW));
+        Notification.Builder n=new Notification.Builder(this,"dns_takeover")
+                .setSmallIcon(android.R.drawable.stat_sys_download_done)
+                .setContentTitle("DNS Observer · IPv4 / IPv6 DNS 接管")
+                .setContentText("按选择的协议持续接管 · 可在应用内关闭")
+                .setOngoing(true);
+        startForeground(54,n.build());
+    }
+    @Override public int onStartCommand(Intent intent,int flags,int startId){
+        String action=intent==null?"":intent.getAction();
+        if(ACTION_STOP.equals(action)){
+            stopped=true;
+            prefs().edit().putBoolean("takeover_enabled",false).commit();
+            io.execute(this::stopAll);
+            return START_NOT_STICKY;
+        }
+        if(!ACTION_START.equals(action) && !prefs().getBoolean("takeover_enabled",false)) {
+            stopSelf();return START_NOT_STICKY;
+        }
+        try{foreground();}catch(Exception error){event(this,"无法启动前台服务："+error);stopSelf();return START_NOT_STICKY;}
+        stopped=false;
+        if(!monitoring){
+            monitoring=true;
+            io.execute(this::startSelected);
+        }
+        return START_STICKY;
+    }
+    private void status(String line){prefs().edit().putString("takeover_status",line).apply();event(this,line);}
+    private Intent ipv4Intent(SharedPreferences p){
+        Intent i=new Intent(this,DnsForwardService.class).setAction(DnsForwardService.ACTION_START);
+        i.putExtra("host",p.getString("host",""));
+        i.putExtra("port",parsePort(p.getString("port","31017")));
+        i.putExtra("bootstrap",p.getString("bootstrap",""));
+        i.putExtra("sub_host",p.getString("sub_host",""));
+        i.putExtra("sub_port",parsePort(p.getString("sub_port","31017")));
+        i.putExtra("secondary_host",p.getString("secondary_host",""));
+        i.putExtra("secondary_port",parsePort(p.getString("secondary_port","31017")));
+        i.putExtra("ipv6",false);
+        return i;
+    }
+    private static int parsePort(String value){try{return Integer.parseInt(value);}catch(Exception ex){return -1;}}
+    private void startSelected(){
+        SharedPreferences p=prefs();
+        expect4=p.getBoolean("takeover_ipv4",true);
+        expect6=p.getBoolean("takeover_ipv6",false);
+        if(!expect4 && !expect6){status("没有勾选 IPv4/IPv6，未启动");stopSelf();return;}
+        if(stopped || !p.getBoolean("takeover_enabled",false)){stopAll();return;}
+        try {
+            // Never depend on Android's system resolver for hostname bootstrap.
+            DnsBootstrap.parseLiteral(p.getString("bootstrap", "").trim());
+            if(expect4){
+                startForegroundService(ipv4Intent(p));
+                status("IPv4 启动请求已发送；正在安装 NAT 接管规则");
+            } else {
+                try{DnsRootRules.remove(this);}catch(Exception ex){status("IPv4 清理失败："+ex.getMessage());}
+            }
+            if(stopped)return;
+            if(expect6){
+                String result=DnsIpv6GlobalController.start(this);
+                status("IPv6："+result);
+            }else{
+                status("IPv6 未勾选；清理现有 TPROXY 规则");
+                DnsIpv6GlobalController.stop(this);
+            }
+            status("接管任务已按勾选协议提交；无自动到期关闭");
+        }catch(Exception ex){status("启动失败："+ex.getClass().getSimpleName()+" "+ex.getMessage());}
+        Thread observer=new Thread(this::monitor,"DNS-takeover-observer");
+        observer.setDaemon(true);observer.start();
+    }
+    private void monitor(){
+        while(!stopped && prefs().getBoolean("takeover_enabled",false)){
+            try{Thread.sleep(15000);}catch(InterruptedException e){Thread.currentThread().interrupt();break;}
+            if(stopped || !prefs().getBoolean("takeover_enabled",false))break;
+            SharedPreferences p=prefs(); boolean heal=p.getBoolean("takeover_auto_repair",false);
+            if(expect4){
+                boolean active=p.getBoolean("running",false)&&DnsRootRules.active(this);
+                if(!active){
+                    if(!fault4){status("DETECT: IPv4 DNS 接管被覆盖或服务退出");fault4=true;}
+                    if(heal){
+                        try{
+                            if(!p.getBoolean("running",false))startForegroundService(ipv4Intent(p));
+                            else DnsRootRules.install(this,false,"repair"+System.currentTimeMillis());
+                            status("REPAIR: 已尝试重新接管 IPv4");
+                        }catch(Exception ex){status("REPAIR_FAIL IPv4: "+ex.getMessage());}
+                    }
+                }else fault4=false;
+            }
+            if(stopped)break;
+            if(expect6){
+                boolean active=DnsIpv6GlobalController.active(this);
+                if(!active){
+                    if(!fault6){status("DETECT: IPv6 DNS 接管规则被覆盖或 Root 代理退出");fault6=true;}
+                    if(heal){
+                        try{
+                            String stoppedResult=DnsIpv6GlobalController.stop(this);
+                            status("IPv6 覆盖修复：先清理自身旧规则 · "+stoppedResult);
+                            String result=DnsIpv6GlobalController.start(this);
+                            status("REPAIR: IPv6 "+result);
+                        }catch(Exception ex){status("REPAIR_FAIL IPv6: "+ex.getMessage());}
+                    }
+                }else fault6=false;
+            }
+        }
+    }
+    private void stopAll(){
+        stopped=true;expect4=false;expect6=false;
+        StringBuilder b=new StringBuilder("关闭接管：");
+        try{startService(new Intent(this,DnsForwardService.class).setAction(DnsForwardService.ACTION_STOP));
+            b.append(" IPv4 服务停止请求已发出；");}catch(Exception ex){b.append(" IPv4 服务停止请求失败：").append(ex.getMessage());}
+        try{DnsRootRules.remove(this);b.append(" IPv4 规则已清理；");}
+        catch(Exception ex){b.append(" IPv4 清理失败：").append(ex.getMessage());}
+        boolean clean6=false;
+        try{String v6=DnsIpv6GlobalController.stop(this);b.append(" IPv6 ").append(v6).append('；');clean6=v6.contains("VERIFY_CLEAN");}
+        catch(Exception ex){b.append(" IPv6 清理失败：").append(ex.getMessage());}
+        try{DnsIpv6PilotController.stop(this);DnsIpv6Experiment.recover(this);b.append(" 旧实验规则已检查；");}
+        catch(Exception ex){b.append(" 旧实验恢复失败：").append(ex.getMessage());}
+        // IPv4 stop runs asynchronously: wait for its firewallLock cleanup before final report.
+        for(int retry=0;retry<5 && DnsRootRules.active(this);retry++) {
+            try{Thread.sleep(300);}catch(InterruptedException ex){Thread.currentThread().interrupt();break;}
+        }
+        if(DnsRootRules.active(this)) {
+            try{DnsRootRules.remove(this);}catch(Exception ex){b.append(" IPv4 二次清理失败：").append(ex.getMessage());}
+        }
+        boolean clean4=!DnsRootRules.active(this);
+        status(b.toString()+" IPv4="+(clean4?"VERIFY_CLEAN":"VERIFY_FAILED")+"，IPv6="+(clean6?"VERIFY_CLEAN":"VERIFY_FAILED/请核对恢复日志"));
+        monitoring=false;
+        stopForeground(STOP_FOREGROUND_REMOVE);
+        stopSelf();
+    }
+    @Override public void onDestroy(){stopped=true;io.shutdownNow();super.onDestroy();}
+}

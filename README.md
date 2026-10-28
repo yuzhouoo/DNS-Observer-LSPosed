@@ -1,3 +1,17 @@
+# DNS Observer v0.6.2-beta4 — 统一 IPv4 / IPv6 DNS 接管控制
+
+- IPv4 NAT 与 IPv6 TPROXY **独立复选框**。至少选一项启动。依然只处理 UDP/TCP 53；不覆盖 DoH/DoT/DoQ；IPv6 Root UID 0 不劫持。
+- 统一“关闭接管”不参考勾选，发送停止 IPv4 和 IPv6 服务请求，清理 DOBSR53 / DO6G061 / DO6TST55 自有链及相应标记、策略路由、局部规则；不 flush 系统表、不删外部规则。返回残留核查结果。
+- **取消自动定时关闭**：正式 IPv6 不再 145 秒退出，也不再 180 秒看门狗定时回滚。异常时 Root 代理关闭仍执行安全清理，避免断网；这不是周期性超时恢复。原 UID 隔离诊断仍为限时测试，但不在主页面上。
+- 新增检测系统覆盖：前台服务每约 15 秒读取 IPv4 NAT 和 IPv6 TPROXY 自有规则状态，记录一次状态异常事件到独立事件日志。若开启“被系统覆盖后自动重新接管”，则仅在用户要求接管且没有手动关闭时尝试修复或重启 IPv6 Root 代理；默认关闭。
+- 新增开机自启开关：在 Android BOOT_COMPLETED 后，如果“开机自动启动”及“上次仍要求接管”均为 true，则尝试恢复选择的 IPv4/IPv6 代理。手动关闭将清除“要求接管”的状态，所以之后的开机不会偷偷重新启用。
+- 主/从/备**仅使用指定 Bootstrap DNS 纯 IP**解析域名：删除 Android 系统 `InetAddress.getAllByName` 优先路径。用户直接配置数字 IP 则直接使用，不触发域名查询；Bootstrap 为空且需解析域名时拒绝启动。
+- UI 清理重复的历史实验入口，使用深色圆角按钮、IPv4/IPv6 开关与独立垂直滚动日志框：接管状态、覆盖检测、测速明细、IPv6 Root 日志、测速历史。每一类日志都有复制，关键日志可清空。
+
+## 重要边界
+
+beta4 编译通过不等于已在 OnePlus 12 实机验证持续接管及开机自启。务必先关闭系统 Private DNS 与冲突的第三方透明 DNS 规则，在非关键网络环境逐步检查 IPv4-only、IPv6-only 和双协议启动、手动关闭（查看残留核对），然后再开启自动修复与开机自启。Android 后台启动策略和 ROM Root 权限可能限制开机行为。本版不承诺接管 Android 全部 DNS Resolver UID 及加密 DNS。
+
 # DNS Observer v0.6.1-beta3 — IPv6 DNS53 全局试用（必须手动启用）
 
 基于 OnePlus 12 Android 16 / KernelSU 的实验反馈：v0.5.9 DNS53 UDP/TCP 真实上游转发闭环成功，v0.6.0-beta2 连续 16 轮通过并在手动停止后 `VERIFY_CLEAN`。本版进一步实现**普通非 Root UID 的 IPv6 单播 UDP/TCP 53 接管**，不是默认自动开启，也不包含 DoH/DoT/DoQ。

@@ -2,11 +2,11 @@
 # DNS Observer IPv6 global unicast DNS53 trial (explicit opt-in only).
 # Dedicated chain, mark, route table and watchdog; do not touch existing Android rules.
 set -u
-MODE="${1:-}"; APP_UID="${2:-}"; TOKEN="${3:-}"
+MODE="${1:-}"; APP_UID="${2:-}"; TOKEN="${3:-}"; OWNER_PID="${4:-}"
 CHAIN=DO6G061; TABLE=19754; PREF=15010
 MARK=0x40000000/0x40000000; PROXY=15456
 MARKER="/data/local/tmp/dobs6g61_${APP_UID}.run"
-case "$MODE" in install-probe|promote|recover|status|watch) ;; *) exit 2;; esac
+case "$MODE" in install-probe|promote|recover|status|check|watch) ;; *) exit 2;; esac
 case "$APP_UID" in ''|*[!0-9]*) exit 2;; esac
 case "$TOKEN" in ''|*[!a-zA-Z0-9_-]*) exit 2;; esac
 IP6="$(command -v ip6tables 2>/dev/null || true)"
@@ -37,7 +37,11 @@ del_jumps() {
         done
     done
 }
-owned() { [ -f "$MARKER" ] || "$IP6" -t mangle -S "$CHAIN" >/dev/null 2>&1; }
+owned() {
+    [ -f "$MARKER" ] || "$IP6" -t mangle -S "$CHAIN" >/dev/null 2>&1 ||
+    "$IP6" -t mangle -C PREROUTING -i lo -p udp --dport 53 -m mark --mark "$MARK" -j "$CHAIN" >/dev/null 2>&1 ||
+    "$IP6" -t mangle -C PREROUTING -i lo -p tcp --dport 53 -m mark --mark "$MARK" -j "$CHAIN" >/dev/null 2>&1
+}
 route_present() { "$IP" -6 route show table "$TABLE" 2>/dev/null | grep -Eq '^local ::/0 dev lo([[:space:]]|$)'; }
 rule_present() { "$IP" -6 rule show 2>/dev/null | grep -Eq '(^|[[:space:]])15010:.*fwmark 0x40000000/0x40000000.*lookup 19754([[:space:]]|$)'; }
 clear_owned() {
@@ -71,6 +75,18 @@ case "$MODE" in
     clear_owned
     if verify_clean; then rm -f "$MARKER"; echo 'RECOVERED: verified clean'; else exit 11; fi
     ;;
+ check)
+    [ "$(cat "$MARKER" 2>/dev/null)" = "global:$TOKEN" ] || exit 1
+    "$IP6" -t mangle -S "$CHAIN" >/dev/null 2>&1 || exit 1
+    rule_present && route_present || exit 1
+    for proto in udp tcp; do
+        "$IP6" -t mangle -C PREROUTING -i lo -p "$proto" --dport 53 -m mark --mark "$MARK" -j "$CHAIN" >/dev/null 2>&1 || exit 1
+        for subnet in '2000::/3' 'fc00::/7'; do
+            "$IP6" -t mangle -C OUTPUT -d "$subnet" -p "$proto" --dport 53 -m owner ! --uid-owner 0 -j MARK --set-xmark "$MARK" >/dev/null 2>&1 || exit 1
+        done
+    done
+    echo 'ACTIVE: IPv6 TPROXY selectors complete'
+    ;;
  status)
     echo 'OUTPUT/PREROUTING:'
     "$IP6" -t mangle -L OUTPUT -n -v -x 2>&1 | grep -E '2000::/3|fc00::/7' || true
@@ -98,8 +114,10 @@ case "$MODE" in
     "$IP6" -t mangle -j TPROXY -h >/dev/null 2>&1 || { echo 'PRECHECK_FAILED: TPROXY missing' >&2; exit 4; }
     printf 'probe:%s\n' "$TOKEN" > "$MARKER" || exit 5
     chmod 600 "$MARKER" || true
-    # Spawn watchdog before any routing changes.
-    /system/bin/sh "$0" watch "$APP_UID" "$TOKEN" </dev/null >/dev/null 2>&1 &
+    # Crash-only guard, NO periodic expiration. This guard releases stale rules
+    # only when the owning Android process disappears, never after a TTL.
+    case "$OWNER_PID" in ''|*[!0-9]*) echo 'PRECHECK_FAILED: missing owner PID' >&2; rm -f "$MARKER"; exit 4;; esac
+    /system/bin/sh "$0" watch "$APP_UID" "$TOKEN" "$OWNER_PID" </dev/null >/dev/null 2>&1 &
     "$IP6" -t mangle -N "$CHAIN" || { clear_owned; exit 5; }
     for proto in udp tcp; do
         "$IP6" -t mangle -A "$CHAIN" -p "$proto" -j TPROXY --on-ip ::1 --on-port "$PROXY" --tproxy-mark "$MARK" || { clear_owned; exit 6; }
@@ -139,11 +157,16 @@ case "$MODE" in
     echo 'PROMOTED: globally scoped non-root IPv6 unicast DNS53, UID 0 excluded'
     ;;
  watch)
-    n=0
-    while [ "$n" -lt 180 ]; do
+    case "$OWNER_PID" in ''|*[!0-9]*) exit 2;; esac
+    while :; do
         state="$(cat "$MARKER" 2>/dev/null)"
         [ "$state" = "probe:$TOKEN" ] || [ "$state" = "global:$TOKEN" ] || exit 0
-        sleep 1; n=$((n+1))
+        if ! kill -0 "$OWNER_PID" 2>/dev/null; then break; fi
+        case "$(tr '\000' ' ' < "/proc/$OWNER_PID/cmdline" 2>/dev/null)" in
+            *dev.yz.dnsobserver*) ;;
+            *) break;;
+        esac
+        sleep 5
     done
     state="$(cat "$MARKER" 2>/dev/null)"
     if [ "$state" = "probe:$TOKEN" ] || [ "$state" = "global:$TOKEN" ]; then

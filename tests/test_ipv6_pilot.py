@@ -22,8 +22,8 @@ assert control.index('preflight(app)')<control.index('root(app,"install-pilot"')
 assert 'if(!udp||!tcp)' in control and 'stop(ctx)' in control
 assert 'if(ownsRules || (installAttempted' in control and 'PRECHECK_FAILED' in control
 assert 'DnsIpv6Experiment.recover(app)' in control and 'DnsIpv6Experiment.recover(ctx)' in control
-assert 'DnsIpv6PilotController.start' in ui and 'DnsIpv6PilotController.stop' in ui
-assert 'DnsIpv6PilotController.test' in ui and 'DnsIpv6PilotController.isRunning()' in ui
-assert '复制完整 IPv6 试运行日志' in ui
-assert 'v0.6.1-beta3' in ui
+assert 'DnsIpv6PilotController.stop(this)' in (root/'DnsTakeoverService.java').read_text()
+assert 'DnsIpv6PilotController.isRunning()' in (root/'DnsIpv6GlobalController.java').read_text()
+assert 'copyText(String value,String title)' in ui
+assert 'v0.6.2-beta4' in ui
 print('PASS: opt-in restricted IPv6 multi-query Root pilot, auto-recovery and UI wiring')

@@ -19,14 +19,13 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
-/** Opt-in, bounded local-output IPv6 DNS53 transparent relay.
+/** Opt-in, user-controlled local-output IPv6 DNS53 transparent relay.
  * Requires Android 12+ Os.recvmsg/StructMsghdr and IPV6_RECVPKTINFO.
  * Different from document-target pilot: the UDP reply MUST use the received
  * packet's original IPv6 destination, not a fixed documentation IP. */
 public final class DnsIpv6GlobalDaemon {
     private static final int IPV6_TRANSPARENT=75;
     private static final int PORT=15456, DNS_PORT=53, MAX_DNS=4096;
-    private static final int TTL_SECONDS=145;
     private static final AtomicInteger received=new AtomicInteger(), replied=new AtomicInteger(), errors=new AtomicInteger();
     private static volatile boolean running=true;
     private static volatile int consecutiveFailures=0;
@@ -90,7 +89,7 @@ public final class DnsIpv6GlobalDaemon {
             }catch(Exception ex){log("UPSTREAM_FAIL protocol="+protocol+" index="+i+" error="+ex.getClass().getSimpleName());}
         }
         errors.incrementAndGet();
-        if(++consecutiveFailures>=6){running=false;log("UNHEALTHY: six consecutive upstream failures, closing session");}
+        if(++consecutiveFailures%6==0)log("UNHEALTHY: repeated upstream failures="+consecutiveFailures);
         return DnsPacket.servfail(request);
     }
     private static void respondUdp(UdpMessage message,byte[] reply)throws Exception {
@@ -107,8 +106,8 @@ public final class DnsIpv6GlobalDaemon {
             replied.incrementAndGet();
         }finally{close(fd);}
     }
-    private static void serveUdp(FileDescriptor listen,Endpoint[] upstream,ThreadPoolExecutor workers,long until){
-        while(running && System.nanoTime()<until){
+    private static void serveUdp(FileDescriptor listen,Endpoint[] upstream,ThreadPoolExecutor workers){
+        while(running){
             try{
                 UdpMessage q=receiveUdp(listen);
                 workers.execute(()->{
@@ -155,8 +154,8 @@ public final class DnsIpv6GlobalDaemon {
         }catch(Exception ex){errors.incrementAndGet();log("TCP_QUERY_ERROR "+ex.getClass().getSimpleName()+" "+String.valueOf(ex.getMessage()));}
         finally{close(fd);}
     }
-    private static void serveTcp(FileDescriptor server,Endpoint[] upstream,ThreadPoolExecutor workers,long until){
-        while(running&&System.nanoTime()<until){
+    private static void serveTcp(FileDescriptor server,Endpoint[] upstream,ThreadPoolExecutor workers){
+        while(running){
             FileDescriptor client=null;
             try{
                 client=Os.accept(server,new InetSocketAddress(0));
@@ -190,12 +189,11 @@ public final class DnsIpv6GlobalDaemon {
             Os.listen(tcp,24);
             workers=new ThreadPoolExecutor(2,4,10,TimeUnit.SECONDS,new ArrayBlockingQueue<>(32));
             final FileDescriptor fUdp=udp,fTcp=tcp;final ThreadPoolExecutor pool=workers;
-            long limit=System.nanoTime()+TimeUnit.SECONDS.toNanos(TTL_SECONDS);
-            Thread thUdp=new Thread(()->serveUdp(fUdp,upstream,pool,limit),"GlobalDns-UDP");
-            Thread thTcp=new Thread(()->serveTcp(fTcp,upstream,pool,limit),"GlobalDns-TCP");
+            Thread thUdp=new Thread(()->serveUdp(fUdp,upstream,pool),"GlobalDns-UDP");
+            Thread thTcp=new Thread(()->serveTcp(fTcp,upstream,pool),"GlobalDns-TCP");
             thUdp.setDaemon(true);thTcp.setDaemon(true);thUdp.start();thTcp.start();
-            log("READY euid=0 port="+PORT+" endpoints="+upstream.length+" ttl="+TTL_SECONDS+"s pktinfo=1");
-            while(running && System.nanoTime()<limit && thUdp.isAlive() && thTcp.isAlive())Thread.sleep(350);
+            log("READY euid=0 port="+PORT+" endpoints="+upstream.length+" persistent=1 pktinfo=1");
+            while(running && thUdp.isAlive() && thTcp.isAlive())Thread.sleep(350);
         }catch(Throwable ex){log("ERROR "+ex.getClass().getSimpleName()+" "+String.valueOf(ex.getMessage()));}
         finally{
             running=false;close(udp);close(tcp);

@@ -17,22 +17,13 @@ public final class DnsBootstrap {
     private DnsBootstrap() { }
 
     public static InetAddress[] resolve(String host, String backupIp) throws Exception {
-        if (host == null || host.isEmpty() || host.length() > 253 || host.contains("://") || host.contains("/"))
-            throw new IllegalArgumentException("上游须填写纯域名或 IP，不含协议和端口");
-        try {
-            InetAddress[] addresses = InetAddress.getAllByName(host);
-            if (addresses.length > 0) return addresses;
-        } catch (Exception failed) {
-            if (backupIp == null || backupIp.trim().isEmpty()) throw failed;
-        }
-        InetAddress bootstrap = parseLiteral(backupIp.trim());
-        List<InetAddress> found = new ArrayList<>();
-        for (int rr : new int[]{1, 28}) {
-            try { found.addAll(resolveViaIp(host, bootstrap, rr)); }
-            catch (Exception ignored) { }
-        }
-        if (found.isEmpty()) throw new IllegalStateException("备用 Bootstrap DNS 未返回上游域名 IP");
-        return found.toArray(new InetAddress[0]);
+        if(host==null||host.trim().isEmpty()||host.length()>253||host.contains("://")||host.contains("/"))
+            throw new IllegalArgumentException("上游 DNS 必须为纯域名或 IP");
+        String name=host.trim();
+        // Literal DNS endpoints do not need a name lookup.
+        try { return new InetAddress[]{parseLiteral(name)}; }
+        catch(IllegalArgumentException ignore) { /* Must be a hostname: Bootstrap only. */ }
+        return resolveOnlyViaBackup(name,backupIp);
     }
 
     /**
@@ -41,6 +32,10 @@ public final class DnsBootstrap {
      * process may issue the upstream query under a different UID.
      */
     public static InetAddress[] resolveOnlyViaBackup(String host, String backupIp) throws Exception {
+        if(host==null||host.trim().isEmpty()||host.contains("://")||host.contains("/"))
+            throw new IllegalArgumentException("上游 DNS 域名无效");
+        try { return new InetAddress[]{parseLiteral(host.trim())}; }
+        catch(IllegalArgumentException ignored) { /* hostname */ }
         InetAddress bootstrap = parseLiteral(backupIp == null ? "" : backupIp.trim());
         List<InetAddress> found = new ArrayList<>();
         for (int rr : new int[]{1, 28}) {

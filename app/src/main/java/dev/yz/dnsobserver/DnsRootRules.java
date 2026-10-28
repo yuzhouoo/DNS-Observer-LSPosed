@@ -13,7 +13,7 @@ import java.util.concurrent.TimeUnit;
 /** The ONLY code responsible for Root firewall changes. No persistent boot scripts. */
 public final class DnsRootRules {
     public static final int PORT = 15353;
-    private static final String SCRIPT = "dns-root-v052.sh";
+    private static final String SCRIPT = "dns-root-v062.sh";
 
     private DnsRootRules() { }
 

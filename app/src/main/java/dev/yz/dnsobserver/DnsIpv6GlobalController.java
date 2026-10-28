@@ -31,7 +31,7 @@ import java.util.concurrent.TimeUnit;
  * after four successful client response checks. Root UID is always excluded. */
 public final class DnsIpv6GlobalController {
     private static final Object LOCK=new Object();
-    private static final String SCRIPT="dns-ipv6-global-v061.sh";
+    private static final String SCRIPT="dns-ipv6-global-v062.sh";
     private static final String PREF_LOG="ipv6_global_log";
     private static final String[] DOCS={"2001:db8:ffff::53","2001:db8:ffff::54"};
     private static java.lang.Process process;
@@ -76,11 +76,11 @@ public final class DnsIpv6GlobalController {
         return file;
     }
     private static String root(Context ctx,String mode,String session,int seconds)throws Exception{
-        if(!mode.matches("install-probe|promote|recover|status")||!session.matches("[a-zA-Z0-9_-]{1,64}"))
+        if(!mode.matches("install-probe|promote|recover|status|check")||!session.matches("[a-zA-Z0-9_-]{1,64}"))
             throw new IllegalArgumentException("Invalid global IPv6 command");
         String path=script(ctx).getAbsolutePath();
         if(!path.matches("/[a-zA-Z0-9_./-]+"))throw new IllegalStateException("Unexpected script path");
-        String command="/system/bin/sh "+path+" "+mode+" "+Process.myUid()+" "+session;
+        String command="/system/bin/sh "+path+" "+mode+" "+Process.myUid()+" "+session+" "+Process.myPid();
         java.lang.Process p=new ProcessBuilder("su","-c",command).redirectErrorStream(true).start();
         ByteArrayOutputStream buffer=new ByteArrayOutputStream();
         Thread output=new Thread(()->{
@@ -200,7 +200,7 @@ public final class DnsIpv6GlobalController {
             token=UUID.randomUUID().toString().replace("-","");
             java.lang.Process started=null;
             boolean installAttempted=false;
-            log(app,"启动独立 IPv6 DNS 全局试用（非 Root UID，145 秒，独立 180 秒恢复）");
+            log(app,"启动 IPv6 DNS 全局接管（非 Root UID；手动停止、无定时到期）");
             try{
                 List<Endpoint> servers=preflight(app);
                 started=spawn(app,token,servers);process=started;
@@ -218,14 +218,14 @@ public final class DnsIpv6GlobalController {
                     try{monitor.waitFor();}catch(InterruptedException ex){Thread.currentThread().interrupt();}
                     synchronized(LOCK){
                         if(process!=monitor)return;
-                        log(app,"Root 服务退出：尝试自动撤销全局 IPv6 规则");
+                        log(app,"Root 服务意外退出：执行安全清理（非定时恢复）");
                         try{String result=root(app,"recover",token,12);ownsRules=false;promoted=false;log(app,result);}
                         catch(Exception ex){log(app,"自动清理未确认："+ex.getMessage());}
                         process=null;
                     }
                 },"IPv6-global-exit-guard");guard.setDaemon(true);guard.start();
-                log(app,"全局 IPv6 DNS53 已开启（UID 0 除外），最多 145 秒；不影响 IPv4");
-                return "IPv6 DNS53 已启用：多地址 UDP/TCP 自检全部通过；到期自动恢复";
+                log(app,"全局 IPv6 DNS53 已开启（UID 0 除外）；持续运行直至手动关闭");
+                return "IPv6 DNS53 已启用：多地址 UDP/TCP 自检全部通过；无定时关闭";
             }catch(Exception error){
                 log(app,"启用失败："+error.getClass().getSimpleName()+" "+error.getMessage());
                 if(started!=null){started.destroy();try{if(!started.waitFor(700,TimeUnit.MILLISECONDS))started.destroyForcibly();}catch(Exception ignored){started.destroyForcibly();}}
@@ -254,6 +254,13 @@ public final class DnsIpv6GlobalController {
             catch(Exception ex){result="RECOVERY_FAILED: "+ex.getMessage();}
             log(ctx,"关闭 IPv6 全局 DNS："+result);
             return result;
+        }
+    }
+    public static boolean active(Context ctx) {
+        synchronized(LOCK) {
+            if(process==null || !process.isAlive() || !promoted)return false;
+            try { root(ctx,"check",token,8);return true; }
+            catch(Exception ex) { return false; }
         }
     }
     public static String status(Context ctx){

@@ -124,8 +124,7 @@ public final class DnsForwardService extends Service {
             if (subHost!=null && !subHost.trim().isEmpty()
                     && (subPort<1 || subPort>65535)) throw new IllegalArgumentException("从 DNS 端口错误");
             if (backupIp != null && !backupIp.trim().isEmpty()) DnsBootstrap.parseLiteral(backupIp.trim());
-            // Clear a stale redirect BEFORE asking Android's system resolver.
-            // Even our app's getAllByName may be sent over netd/dnsresolver UID.
+            // Clear stale IPv4 redirect before Bootstrap-only lookups.
             DnsRootRules.remove(this);
             if (cancellationRequested) throw new IOException("用户已取消 DNS 接管启动");
             try { upstream=DnsBootstrap.resolve(host.trim(), backupIp); }
@@ -368,14 +367,16 @@ public final class DnsForwardService extends Service {
             if(!running)break;
             boolean any=false;for(boolean ok:healthy)any|=ok;
             if(!any) {
-                writeState(false,"主、从、备 DNS 健康检测均失败，正在恢复系统 DNS");
-                stopNow();return;
+                writeState(true,"主、从、备 DNS 健康检测均失败；保留接管并等待下次检查");
+                DnsTakeoverService.event(this,"DETECT: IPv4 上游全部不可用（未执行自动关闭）");
+                continue;
             }
             if(rolePolicy.onHealth(configured,healthy,android.os.SystemClock.elapsedRealtime()))
                 writeState(true,"DNS 优先级切换到 " + DnsFailover.NAMES[rolePolicy.current()]);
             saveActiveSnapshot();
             if(activated && !DnsRootRules.active(this)) {
-                writeState(false,"接管规则不完整，正在安全回滚");stopNow();return;
+                writeState(true,"接管规则不完整；等待接管守护开关处理");
+                DnsTakeoverService.event(this,"DETECT: IPv4 DNS NAT 规则不完整");
             }
         }
     }

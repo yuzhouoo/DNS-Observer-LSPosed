@@ -62,7 +62,9 @@ case "$ACTION" in
     ;;
   status)
     "$IPT" -t nat -C OUTPUT -p udp --dport 53 -j "$CHAIN" >/dev/null 2>&1 &&
-    "$IPT" -t nat -C OUTPUT -p tcp --dport 53 -j "$CHAIN" >/dev/null 2>&1
+    "$IPT" -t nat -C OUTPUT -p tcp --dport 53 -j "$CHAIN" >/dev/null 2>&1 &&
+    "$IPT" -t nat -S "$CHAIN" >/dev/null 2>&1 &&
+    [ -f "$MARKER" ]
     ;;
   install)
     case "$PID_ARG" in ''|*[!0-9]*) exit 2;; esac

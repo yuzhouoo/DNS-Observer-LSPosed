@@ -8,6 +8,7 @@
          Broader package visibility is used for local UID->human-readable label only. -->
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <application
         android:allowBackup="false"
@@ -25,6 +26,14 @@
         <service android:name=".DnsUpstreamJob"
             android:permission="android.permission.BIND_JOB_SERVICE"
             android:exported="true" />
+        <receiver android:name=".DnsBootReceiver" android:enabled="true" android:exported="false">
+            <intent-filter><action android:name="android.intent.action.BOOT_COMPLETED" /></intent-filter>
+        </receiver>
+        <service android:name=".DnsTakeoverService"
+            android:exported="false" android:foregroundServiceType="specialUse">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="User-enabled continuous DNS takeover with explicit bootstrap and persistent notification" />
+        </service>
         <service android:name=".DnsForwardService"
             android:exported="false"
             android:foregroundServiceType="specialUse">
