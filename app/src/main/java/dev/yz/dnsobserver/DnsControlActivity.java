@@ -2,6 +2,8 @@ package dev.yz.dnsobserver;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Color;
@@ -15,6 +17,8 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.view.Gravity;
+import android.view.View;
+import android.widget.Toast;
 
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
@@ -32,6 +36,30 @@ public final class DnsControlActivity extends Activity {
     private volatile boolean measuring;
     private CheckBox ipv6;
     private TextView status, ipv6ExperimentResult;
+
+    /** Text selection works with long press; the button copies the complete current result. */
+    private TextView selectable(TextView view) {
+        view.setTextIsSelectable(true);
+        return view;
+    }
+    private void copyVisibleText(TextView view,String title) {
+        if(view==null || view.getText()==null || view.getText().length()==0) {
+            Toast.makeText(this,"暂无可复制的日志",Toast.LENGTH_SHORT).show();
+            return;
+        }
+        ClipboardManager clipboard=(ClipboardManager)getSystemService(CLIPBOARD_SERVICE);
+        if(clipboard==null) {
+            Toast.makeText(this,"无法访问剪贴板",Toast.LENGTH_SHORT).show();
+            return;
+        }
+        clipboard.setPrimaryClip(ClipData.newPlainText(title,view.getText().toString()));
+        Toast.makeText(this,"已复制完整"+title,Toast.LENGTH_SHORT).show();
+    }
+    private void showExperimentLog(String result) {
+        if(result==null)return;
+        prefs.edit().putString("ipv6_last_report",result).apply();
+        ipv6ExperimentResult.setText(result);
+    }
     private SharedPreferences prefs;
     private boolean visible;
 
@@ -67,9 +95,10 @@ public final class DnsControlActivity extends Activity {
         LinearLayout root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(20),dp(16),dp(20),dp(24));scroll.addView(root);
         setContentView(scroll);
-        root.addView(label("DNS 接管 · v0.5.3",23,FG));
+        root.addView(label("DNS 接管 · v0.5.4",23,FG));
         root.addView(label("保留现有 LSPosed DNS 监控；接管仅作用于常规 UDP/TCP 53。\n需要 Root。默认关闭、不随系统开机启动。",13,SECOND));
-        status=label("正在检查状态…",15,FG);root.addView(status);
+        status=selectable(label("正在检查状态…",15,FG));root.addView(status);
+        button("复制当前接管状态",root).setOnClickListener(v->copyVisibleText(status,"接管状态"));
         host=field(root,"主 DNS 域名（不带协议、端口）",prefs.getString("host",""));
         port=field(root,"主 DNS 端口",prefs.getString("port","31017"));
         port.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
@@ -91,15 +120,19 @@ public final class DnsControlActivity extends Activity {
         root.addView(speedResults);
         speedResults.addView(label("未开始测速；点击上方按钮查看每个 IP 的独立延迟。",13,SECOND));
         root.addView(label("IPv6 TPROXY 实验（仅 ::1 回环、特殊端口 15453，不接管真实 DNS）：实验规则 20 秒自动清理，可随时一键恢复。",12,SECOND));
-        ipv6ExperimentResult=label("IPv6 TPROXY 实验尚未运行。",12,SECOND);
+        ipv6ExperimentResult=selectable(label(
+                prefs.getString("ipv6_last_report","IPv6 TPROXY 实验尚未运行。"),12,FG));
         root.addView(ipv6ExperimentResult);
+        root.addView(label("实验日志可长按选择文本，也可点下面按钮一次复制完整原始输出。",12,SECOND));
+        button("复制完整 IPv6 调试日志",root).setOnClickListener(v->copyVisibleText(ipv6ExperimentResult,"IPv6 调试日志"));
         button("验证 IPv6 TPROXY · Root 透明 Socket 隔离实验",root).setOnClickListener(v ->
             new AlertDialog.Builder(this).setTitle("运行 IPv6 TPROXY 隔离实验？")
                 .setMessage("实验只临时匹配 IPv6 回环 ::1:15453，不修改 Android 路由、现有 fwmark、DNS 53 或系统规则。即使安装成功也不代表真实 DNS 已接管。20 秒超时清理，并提供手动恢复。")
                 .setNegativeButton("取消",null)
                 .setPositiveButton("开始验证",(d,w)-> new Thread(()->{
-                    ui.post(()->{if(!isDestroyed())ipv6ExperimentResult.setText("正在安装隔离测试规则…");});
+                    ui.post(()->{if(!isDestroyed())status.setText("正在安装 IPv6 隔离测试规则；上次调试日志仍可复制…");});
                     final String result=DnsIpv6Experiment.run(this);
+                    prefs.edit().putString("ipv6_last_report",result).apply();
                     ui.post(()->{if(!isDestroyed())ipv6ExperimentResult.setText(result);});
                 },"DNS-IPv6-experiment").start()).show());
         button("一键恢复 IPv6 实验规则",root).setOnClickListener(v ->
@@ -108,7 +141,13 @@ public final class DnsControlActivity extends Activity {
                 try{outcome=DnsIpv6Experiment.recover(this);}
                 catch(Exception e){outcome="实验规则恢复失败："+e.getMessage();}
                 final String reply=outcome;
-                ui.post(()->{if(!isDestroyed())ipv6ExperimentResult.setText(reply);});
+                ui.post(()->{
+                    if(isDestroyed())return;
+                    // Preserve the diagnostic details instead of replacing them with recovery output.
+                    String existing=prefs.getString("ipv6_last_report","");
+                    String combined=(existing.isEmpty()?"":existing+"\n\n")+"【手动恢复】\n"+reply;
+                    showExperimentLog(combined);
+                });
             },"DNS-IPv6-recover").start());
         button("启动 DNS 接管",root).setOnClickListener(v->new AlertDialog.Builder(this)
                 .setTitle("启用 Root DNS 接管？")
@@ -135,7 +174,8 @@ public final class DnsControlActivity extends Activity {
         root.addView(label("健康监测 · 每约 15 分钟在未接管时由系统调度，接管时每 60 秒测延时、每 5 分钟尝试刷新 IP。实际触发可能受系统省电影响；接管期间若未配置 Bootstrap 纯 IP，只监测已缓存地址。",12,SECOND));
         button("重新测速并保存全部 IP / 协议历史",root).setOnClickListener(v->testServer());
         root.addView(label("主从备测速 / IP 历史",17,FG));
-        history=label("正在加载历史…",12,SECOND);root.addView(history);
+        history=selectable(label("正在加载历史…",12,SECOND));root.addView(history);
+        button("复制当前 DNS 测速历史",root).setOnClickListener(v->copyVisibleText(history,"DNS 测速历史"));
         root.addView(label("安全说明：本模块只清理 DOBSR53 专属防火墙链，不清空系统规则。单独的 Root 监视脚本会在应用进程消失时尝试回滚；无法保证所有 ROM / Root 实现上的绝对自动恢复。",12,SECOND));
     }
     private void persist() {
@@ -281,12 +321,15 @@ public final class DnsControlActivity extends Activity {
             if(!details.isEmpty()){
                 TextView expanded=label("查看每个 IP 的 Ping / UDP DNS / TCP DNS 诊断（"+r.samples.size()+" 项）  ▾",12,SECOND);
                 card.addView(expanded);
-                expanded.setOnClickListener(new android.view.View.OnClickListener(){boolean open;
-                    @Override public void onClick(android.view.View v) {
-                        open=!open;
-                        expanded.setText(open?details:"查看每个 IP 的 Ping / UDP DNS / TCP DNS 诊断（"+r.samples.size()+" 项）  ▾");
-                    }
+                TextView detailView=selectable(label(details,12,FG));
+                detailView.setVisibility(View.GONE);
+                card.addView(detailView);
+                expanded.setOnClickListener(v->{
+                    boolean open=detailView.getVisibility()!=View.VISIBLE;
+                    detailView.setVisibility(open?View.VISIBLE:View.GONE);
+                    expanded.setText(open?"收起该组 IP 诊断  ▴":"查看每个 IP 的 Ping / UDP DNS / TCP DNS 诊断（"+r.samples.size()+" 项）  ▾");
                 });
+                button("复制该组 IP 测速明细",card).setOnClickListener(v->copyVisibleText(detailView,title+" 测速明细"));
             }
         }
     }

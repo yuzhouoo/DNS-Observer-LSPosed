@@ -1,3 +1,14 @@
+# DNS Observer v0.5.4 — 调试日志选中与完整复制
+
+- IPv6 TPROXY 实验报告 TextView 开启长按文本选择，并提供「复制完整 IPv6 调试日志」按钮（Android ClipboardManager）；复制当前视图的完整原文，包括 Root 错误、透明 Socket、数据包、命中计数和恢复状态。
+- 保存最近一次 IPv6 完整实验报告到本地 App SharedPreferences；重新打开页面仍可复制。开始新实验时不立即清掉上一次日志。
+- 手动一键恢复后，将恢复结果附加在原实验报告下方，不再直接覆盖诊断日志。
+- 接管状态、主从备测速历史可长按选择及点击复制。每组完整 IP 测速明细有独立可选择文本区域与复制按钮，点击展开/收起不妨碍长按选择。
+- 本版本只修改展示和日志复制，不改变已有 IPv6 TPROXY 实验规则、超时恢复、KernelSU Root 流程或主从备 DNS 转发策略。剪贴板内容保留在本机，由 Android 系统管理；分享日志前请留意是否含私有域名或 IP。
+- CI 编译和静态检查通过并不代表 ColorOS 的实际剪贴板行为已实测。
+
+---
+
 # DNS Observer v0.5.3 — IPv6 TPROXY Root 透明 Socket 验证
 
 - v0.5.2 实测 TPROXY 计数器 pkts=1 但 IPV6_TRANSPARENT socket 不可用。本版将 socket 创建与 UDP 监听移至经 KernelSU `su` 启动的独立 `app_process`，不再由普通 APP 权限创建，也不再使用普通 DatagramSocket 假装可测 TPROXY。
