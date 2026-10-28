@@ -1,6 +1,7 @@
 package dev.yz.dnsobserver;
 
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.os.Process;
 
 import java.io.BufferedReader;
@@ -71,12 +72,19 @@ public final class DnsIpv6Experiment {
     }
     public static String recover(Context ctx) throws Exception {return root(ctx,"recover","cleanup",12);}
     private static String quote(String text){return "'"+text.replace("'","'\\''")+"'";}
-    private static java.lang.Process listener(Context ctx,String token,String proto,String stage,BlockingQueue<String> logs) throws Exception {
+    private static java.lang.Process listener(Context ctx,String token,String proto,String stage,
+                                               BlockingQueue<String> logs,String upstreamIp,int upstreamPort) throws Exception {
         String apk=ctx.getApplicationInfo().sourceDir;
         if(apk==null||!apk.startsWith("/data/app/")||!new File(apk).isFile())
             throw new IllegalStateException("无法定位已安装的 APK dex 路径");
         String command="CLASSPATH="+quote(apk)+" /system/bin/app_process /system/bin "
                +"dev.yz.dnsobserver.DnsIpv6RootProbe "+token+" "+proto+" "+stage;
+        if("UPSTREAM".equals(stage)){
+            if(upstreamIp==null||!upstreamIp.matches("[0-9a-fA-F:.]+") ||
+                    upstreamPort<1||upstreamPort>65535)
+                throw new IllegalArgumentException("Upstream must be a numeric IP");
+            command+=" "+upstreamIp+" "+upstreamPort;
+        }
         java.lang.Process p=new ProcessBuilder("su","-c",command).redirectErrorStream(true).start();
         Thread read=new Thread(()->{
             try(BufferedReader br=new BufferedReader(new InputStreamReader(p.getInputStream(),StandardCharsets.UTF_8))){
@@ -99,8 +107,8 @@ public final class DnsIpv6Experiment {
         }
     }
     private static boolean send(String proto,String stage,String token,InetAddress address,int port) throws Exception {
-        boolean dns53="DNS53".equals(stage)||"DNSREPLY".equals(stage);
-        boolean replyTest="DNSREPLY".equals(stage);
+        boolean dns53="DNS53".equals(stage)||"DNSREPLY".equals(stage)||"UPSTREAM".equals(stage);
+        boolean replyTest="DNSREPLY".equals(stage)||"UPSTREAM".equals(stage);
         byte[] payload=dns53?DnsPacket.probeQuestion():
                 ("DNS6-"+proto+"-"+stage+"-"+token).getBytes(StandardCharsets.US_ASCII);
         if("UDP".equals(proto)){
@@ -112,8 +120,14 @@ public final class DnsIpv6Experiment {
                     byte[] buf=new byte[2048];
                     DatagramPacket received=new DatagramPacket(buf,buf.length);
                     socket.receive(received);
-                    return received.getAddress().equals(address) && received.getPort()==53 &&
-                            Arrays.equals(DnsPacket.servfail(payload),Arrays.copyOf(buf,received.getLength()));
+                    byte[] answer=Arrays.copyOf(buf,received.getLength());
+                    if(!received.getAddress().equals(address)||received.getPort()!=53)return false;
+                    if("UPSTREAM".equals(stage)){
+                        int rcode=answer.length>3?answer[3]&15:-1;
+                        return DnsPacket.validReply(payload,answer) &&
+                                (rcode==0||rcode==3) && !DnsPacket.truncated(answer);
+                    }
+                    return Arrays.equals(DnsPacket.servfail(payload),answer);
                 }
             }
         } else {
@@ -128,6 +142,11 @@ public final class DnsIpv6Experiment {
                     int len=in.readUnsignedShort();
                     if(len<12 || len>2048)throw new IllegalStateException("Invalid DNS TCP response length "+len);
                     byte[] got=new byte[len];in.readFully(got);
+                    if("UPSTREAM".equals(stage)){
+                        int rcode=got.length>3?got[3]&15:-1;
+                        return DnsPacket.validReply(payload,got) &&
+                                (rcode==0||rcode==3) && !DnsPacket.truncated(got);
+                    }
                     return Arrays.equals(DnsPacket.servfail(payload),got);
                 }
             }
@@ -135,16 +154,20 @@ public final class DnsIpv6Experiment {
         return true;
     }
     private static boolean single(Context ctx,String token,String proto,String stage,StringBuilder report) {
+        return single(ctx,token,proto,stage,report,null,0);
+    }
+    private static boolean single(Context ctx,String token,String proto,String stage,
+                                  StringBuilder report,String upstreamIp,int upstreamPort) {
         java.lang.Process proc=null;
         BlockingQueue<String> queue=new LinkedBlockingQueue<>();
-        String name=proto+" "+("DIRECT".equals(stage)?"基础回环":("LOOP".equals(stage)?"TPROXY 回环":("DNS53".equals(stage)?"App 专属 DNS53 请求捕获":("DNSREPLY".equals(stage)?"DNS53 应答回传":"本机非回环"))));
+        String name=proto+" "+("DIRECT".equals(stage)?"基础回环":("LOOP".equals(stage)?"TPROXY 回环":("DNS53".equals(stage)?"App 专属 DNS53 请求捕获":("DNSREPLY".equals(stage)?"DNS53 应答回传":("UPSTREAM".equals(stage)?"真实上游 DNS 转发":"本机非回环")))));
         try {
-            proc=listener(ctx,token,proto,stage,queue);
+            proc=listener(ctx,token,proto,stage,queue,upstreamIp,upstreamPort);
             String ready=waitFor(queue,"READY",6000,report);
             if(!"OK".equals(ready)){report.append(name).append("：透明 Socket 未就绪（").append(ready).append("）\n");return false;}
-            InetAddress target=InetAddress.getByName(("LOCAL".equals(stage)||"DNS53".equals(stage)||"DNSREPLY".equals(stage))?DOC_IP:"::1");
-            int sendPort="DIRECT".equals(stage)?("TCP".equals(proto)?DIRECT_TCP_PORT:LISTEN_PORT):(("DNS53".equals(stage)||"DNSREPLY".equals(stage))?53:TEST_PORT);
-            boolean replyTest="DNSREPLY".equals(stage);
+            InetAddress target=InetAddress.getByName(("LOCAL".equals(stage)||"DNS53".equals(stage)||"DNSREPLY".equals(stage)||"UPSTREAM".equals(stage))?DOC_IP:"::1");
+            int sendPort="DIRECT".equals(stage)?("TCP".equals(proto)?DIRECT_TCP_PORT:LISTEN_PORT):(("DNS53".equals(stage)||"DNSREPLY".equals(stage)||"UPSTREAM".equals(stage))?53:TEST_PORT);
+            boolean replyTest="DNSREPLY".equals(stage)||"UPSTREAM".equals(stage);
             boolean clientReply=false;
             try {
                 clientReply=send(proto,stage,token,target,sendPort);
@@ -157,7 +180,7 @@ public final class DnsIpv6Experiment {
             String observed=waitFor(queue,"RECV_OK",5000,report);
             boolean success="OK".equals(observed) && (!replyTest || clientReply);
             if(replyTest)report.append(name).append(" · 客户端验证：")
-                .append(clientReply?"SERVFAIL ID/源地址匹配":"未通过").append('\n');
+                .append(clientReply?("UPSTREAM".equals(stage)?"真实 DNS 响应 ID/源地址匹配":"SERVFAIL ID/源地址匹配"):"未通过").append('\n');
             report.append(name).append("：").append(success?"成功":"未通过（"+observed+"）").append('\n');
             return success;
         }catch(Exception e){report.append(name).append("：异常 ").append(e.getClass().getSimpleName())
@@ -180,6 +203,57 @@ public final class DnsIpv6Experiment {
         try{report.append("隔离规则计数与路由：\n").append(root(ctx,"status",token,6)).append('\n');}
         catch(Exception e){report.append("读取状态失败：").append(e.getMessage()).append('\n');}
     }
+
+    private static final class Endpoint {
+        final String role,ip;
+        final int port;
+        Endpoint(String role,InetAddress address,int port) {
+            this.role=role;this.ip=address.getHostAddress();this.port=port;
+        }
+    }
+    /** Preflight before installing any rule, never resolve a hostname after DNS capture starts. */
+    private static Endpoint selectUpstream(Context ctx,String protocol,StringBuilder report) {
+        SharedPreferences prefs=ctx.getSharedPreferences(DnsForwardService.PREFS,Context.MODE_PRIVATE);
+        String[] roles={"主","从","备"};
+        String[] hosts={prefs.getString("host",""),prefs.getString("sub_host",""),
+                prefs.getString("secondary_host","")};
+        String[] keys={"port","sub_port","secondary_port"};
+        String bootstrap=prefs.getString("bootstrap","");
+        int checked=0;
+        for(int i=0;i<3;i++) {
+            String host=hosts[i]==null?"":hosts[i].trim();
+            if(host.isEmpty())continue;
+            int port;
+            try {port=Integer.parseInt(prefs.getString(keys[i],"31017").trim());}
+            catch(Exception ex){report.append(roles[i]).append("上游端口无效\n");continue;}
+            if(port<1||port>65535)continue;
+            try {
+                InetAddress[] addresses=DnsBootstrap.resolve(host,bootstrap);
+                for(InetAddress addr:addresses) {
+                    if(!DnsUpstreamExchange.permittedUpstream(addr))continue;
+                    if(checked++>=6) {
+                        report.append("达到上游预检 IP 限额（6）\n");return null;
+                    }
+                    DnsProbe.Sample sample=DnsProbe.measure(addr,port,protocol);
+                    if(sample.success) {
+                        report.append(protocol).append(" 上游预检通过：").append(roles[i]).append(' ')
+                            .append(addr.getHostAddress()).append(':').append(port)
+                            .append("，").append(sample.latencyMs).append("ms\n");
+                        return new Endpoint(roles[i],addr,port);
+                    }
+                    report.append(protocol).append(" 上游预检失败：").append(roles[i]).append(' ')
+                        .append(addr.getHostAddress()).append(':').append(port)
+                        .append("，").append(sample.error).append('\n');
+                }
+            } catch(Exception error){
+                report.append(roles[i]).append("上游解析失败：")
+                        .append(error.getClass().getSimpleName()).append(' ')
+                        .append(error.getMessage()).append('\n');
+            }
+        }
+        report.append(protocol).append(" 无可用上游，跳过对应实验\n");
+        return null;
+    }
     private static boolean cleanup(Context ctx,StringBuilder report){
         try{
             String result=recover(ctx);
@@ -192,7 +266,7 @@ public final class DnsIpv6Experiment {
     }
     public static String run(Context ctx){
         String token=UUID.randomUUID().toString().replace("-","");
-        StringBuilder report=new StringBuilder("IPv6 TPROXY 分阶段现场实验 v0.5.8\n先测 DNS 请求捕获，再仅向本 App 返回离线 SERVFAIL 应答；不拦截其他 App，不请求公网 DNS。\n");
+        StringBuilder report=new StringBuilder("IPv6 TPROXY 分阶段现场实验 v0.5.9\n先验证离线 DNS 应答，再预检已保存的主/从/备上游，进行本 App UID 限域真实 DNS 转发测试。\n");
         boolean clean=true;
         try {
             boolean udp=single(ctx,token,"UDP","DIRECT",report);
@@ -229,6 +303,7 @@ public final class DnsIpv6Experiment {
                             captureOk=dnsUdp&&dnsTcp;
                         } finally {clean=cleanup(ctx,report);}
                         if(clean && captureOk) {
+                            boolean offlineOk=false;
                             try {
                                 report.append(root(ctx,"install-dns",token,10)).append('\n');
                                 boolean replyUdp=single(ctx,token,"UDP","DNSREPLY",report);
@@ -236,7 +311,27 @@ public final class DnsIpv6Experiment {
                                 stageStatus(ctx,token,report);
                                 report.append("IPv6 DNS 回包实验：")
                                       .append(replyUdp&&replyTcp?"UDP/TCP 全部通过":"存在失败").append('\n');
+                                offlineOk=replyUdp&&replyTcp;
                             } finally {clean=cleanup(ctx,report);}
+                            if(clean && offlineOk){
+                                if(DnsRootRules.active(ctx)){
+                                    report.append("正式 DNS 接管已启用，跳过上游实验。\n");
+                                }else{
+                                    // Both preflights happen before any capture rule is installed.
+                                    Endpoint upUdp=selectUpstream(ctx,"UDP",report);
+                                    Endpoint upTcp=selectUpstream(ctx,"TCP",report);
+                                    if(upUdp!=null||upTcp!=null){
+                                        try{
+                                            report.append(root(ctx,"install-dns",token,10)).append('\n');
+                                            boolean goodUdp=upUdp!=null && single(ctx,token,"UDP","UPSTREAM",report,upUdp.ip,upUdp.port);
+                                            boolean goodTcp=upTcp!=null && single(ctx,token,"TCP","UPSTREAM",report,upTcp.ip,upTcp.port);
+                                            stageStatus(ctx,token,report);
+                                            report.append("真实上游 DNS 转发闭环：")
+                                                .append(goodUdp&&goodTcp?"UDP/TCP 全部通过":"存在失败或协议未预检通过").append('\n');
+                                        }finally{clean=cleanup(ctx,report);}
+                                    }
+                                }
+                            }else report.append("离线回包或残留核对未通过，跳过真实上游实验。\n");
                         } else report.append("DNS53 请求捕获或残留核对未通过；跳过回包验证。\n");
                     } else report.append("前置本机流量或清理检查失败，跳过 DNS53 阶段。\n");
                 }
@@ -244,7 +339,7 @@ public final class DnsIpv6Experiment {
         }catch(Throwable e){report.append("实验异常：").append(e.getClass().getSimpleName())
                 .append(' ').append(e.getMessage()).append('\n');}
         finally{cleanup(ctx,report);}
-        return report.append("结论边界：只测试本 App UID 和文档 IPv6 目标的离线 DNS SERVFAIL 请求/回包；即使成功也不代表上游 DNS 转发或全机接管可用。")
+        return report.append("结论边界：真实上游请求/应答实验仍只影响本 App UID 和文档 IPv6 目标；尚未实现全机接管、长期守护或正式主从备自动切换。")
                 .toString();
     }
 }
