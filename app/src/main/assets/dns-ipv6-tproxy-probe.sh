@@ -5,9 +5,9 @@ set -u
 MODE="${1:-}"; UID_ARG="${2:-}"; TOKEN="${3:-}"
 CHAIN=DO6TST55
 LOOP='::1/128'; TEST_ADDR='2001:db8:ffff::53/128'; TEST_IP='2001:db8:ffff::53'
-PORT=15453; PROXY=15454; TABLE=19753; PREF=15000; MARK='0x20000000/0x20000000'
+PORT=15453; DNS_PORT=53; PROXY=15454; TABLE=19753; PREF=15000; MARK='0x20000000/0x20000000'
 MARKER="/data/local/tmp/dobs6t55_${UID_ARG}.run"
-case "$MODE" in install-loop|install-local|recover|status|watch) ;; *) exit 2;; esac
+case "$MODE" in install-loop|install-local|install-dns|recover|status|watch) ;; *) exit 2;; esac
 case "$UID_ARG" in ''|*[!0-9]*) exit 2;; esac
 case "$TOKEN" in ''|*[!a-zA-Z0-9_-]*) exit 2;; esac
 IP6="$(command -v ip6tables 2>/dev/null || true)"
@@ -27,9 +27,16 @@ remove_jumps() {
             done
         done
         n=0
-        while "$IP6" -t mangle -C OUTPUT -d "$TEST_ADDR" -p "$proto" --dport "$PORT" -m owner --uid-owner "$UID_ARG" -j MARK --set-xmark "$MARK" >/dev/null 2>&1; do
-            "$IP6" -t mangle -D OUTPUT -d "$TEST_ADDR" -p "$proto" --dport "$PORT" -m owner --uid-owner "$UID_ARG" -j MARK --set-xmark "$MARK" >/dev/null 2>&1 || break
+        while "$IP6" -t mangle -C PREROUTING -i lo -d "$TEST_ADDR" -p "$proto" --dport "$DNS_PORT" -m mark --mark "$MARK" -j "$CHAIN" >/dev/null 2>&1; do
+            "$IP6" -t mangle -D PREROUTING -i lo -d "$TEST_ADDR" -p "$proto" --dport "$DNS_PORT" -m mark --mark "$MARK" -j "$CHAIN" >/dev/null 2>&1 || break
             n=$((n+1)); [ "$n" -lt 8 ] || break
+        done
+        for match_port in "$PORT" "$DNS_PORT"; do
+            n=0
+            while "$IP6" -t mangle -C OUTPUT -d "$TEST_ADDR" -p "$proto" --dport "$match_port" -m owner --uid-owner "$UID_ARG" -j MARK --set-xmark "$MARK" >/dev/null 2>&1; do
+                "$IP6" -t mangle -D OUTPUT -d "$TEST_ADDR" -p "$proto" --dport "$match_port" -m owner --uid-owner "$UID_ARG" -j MARK --set-xmark "$MARK" >/dev/null 2>&1 || break
+                n=$((n+1)); [ "$n" -lt 8 ] || break
+            done
         done
     done
 }
@@ -56,7 +63,10 @@ verify_clean() {
         for addr in "$LOOP" "$TEST_ADDR"; do
             "$IP6" -t mangle -C PREROUTING -i lo -d "$addr" -p "$proto" --dport "$PORT" -j "$CHAIN" >/dev/null 2>&1 && problem=1
         done
-        "$IP6" -t mangle -C OUTPUT -d "$TEST_ADDR" -p "$proto" --dport "$PORT" -m owner --uid-owner "$UID_ARG" -j MARK --set-xmark "$MARK" >/dev/null 2>&1 && problem=1
+        "$IP6" -t mangle -C PREROUTING -i lo -d "$TEST_ADDR" -p "$proto" --dport "$DNS_PORT" -m mark --mark "$MARK" -j "$CHAIN" >/dev/null 2>&1 && problem=1
+        for match_port in "$PORT" "$DNS_PORT"; do
+            "$IP6" -t mangle -C OUTPUT -d "$TEST_ADDR" -p "$proto" --dport "$match_port" -m owner --uid-owner "$UID_ARG" -j MARK --set-xmark "$MARK" >/dev/null 2>&1 && problem=1
+        done
     done
     "$IP6" -t mangle -S "$CHAIN" >/dev/null 2>&1 && problem=1
     rule_present && problem=1
@@ -81,14 +91,14 @@ case "$MODE" in
     echo 'Test route:'
     "$IP" -6 route show table "$TABLE" 2>&1
     ;;
- install-loop|install-local)
+ install-loop|install-local|install-dns)
     if [ -f "$MARKER" ] || "$IP6" -t mangle -S "$CHAIN" >/dev/null 2>&1; then
         echo 'PRECHECK_FAILED: prior session remains; click recover' >&2; exit 4
     fi
     # Existing routing entries must NOT be overwritten or deleted, even if same priority.
     if "$IP" -6 rule show | grep -Eq '^[[:space:]]*15000:'; then echo 'PRECHECK_FAILED: rule priority 15000 in use' >&2; exit 4; fi
     if [ -n "$("$IP" -6 route show table "$TABLE" 2>/dev/null)" ]; then echo 'PRECHECK_FAILED: route table 19753 in use' >&2; exit 4; fi
-    if [ "$MODE" = install-local ]; then
+    if [ "$MODE" != install-loop ]; then
         if ! "$IP6" -t mangle -m owner -h >/dev/null 2>&1; then echo 'PRECHECK_FAILED: owner match unavailable' >&2; exit 4; fi
     fi
     printf '%s\n' "$TOKEN" > "$MARKER" || exit 5
@@ -99,13 +109,18 @@ case "$MODE" in
     for proto in udp tcp; do
         "$IP6" -t mangle -A "$CHAIN" -p "$proto" -j TPROXY --on-ip ::1 --on-port "$PROXY" --tproxy-mark "$MARK" || { clear_owned; exit 6; }
     done
-    if [ "$MODE" = install-local ]; then
-        # Highly scoped: only this App UID, exact documentation address and test port.
+    if [ "$MODE" != install-loop ]; then
+        # Only this App UID, one RFC3849 documentation IPv6 destination, one port.
         "$IP" -6 route add local "$TEST_ADDR" dev lo table "$TABLE" || { clear_owned; exit 7; }
         "$IP" -6 rule add pref "$PREF" fwmark "$MARK" lookup "$TABLE" || { clear_owned; exit 8; }
+        if [ "$MODE" = install-dns ]; then match_port="$DNS_PORT"; else match_port="$PORT"; fi
         for proto in udp tcp; do
-            "$IP6" -t mangle -I OUTPUT 1 -d "$TEST_ADDR" -p "$proto" --dport "$PORT" -m owner --uid-owner "$UID_ARG" -j MARK --set-xmark "$MARK" || { clear_owned; exit 9; }
-            "$IP6" -t mangle -I PREROUTING 1 -i lo -d "$TEST_ADDR" -p "$proto" --dport "$PORT" -j "$CHAIN" || { clear_owned; exit 10; }
+            "$IP6" -t mangle -I OUTPUT 1 -d "$TEST_ADDR" -p "$proto" --dport "$match_port" -m owner --uid-owner "$UID_ARG" -j MARK --set-xmark "$MARK" || { clear_owned; exit 9; }
+            if [ "$MODE" = install-dns ]; then
+                "$IP6" -t mangle -I PREROUTING 1 -i lo -d "$TEST_ADDR" -p "$proto" --dport "$match_port" -m mark --mark "$MARK" -j "$CHAIN" || { clear_owned; exit 10; }
+            else
+                "$IP6" -t mangle -I PREROUTING 1 -i lo -d "$TEST_ADDR" -p "$proto" --dport "$match_port" -j "$CHAIN" || { clear_owned; exit 10; }
+            fi
         done
     else
         for proto in udp tcp; do

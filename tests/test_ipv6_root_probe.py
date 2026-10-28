@@ -9,7 +9,8 @@ assert 'Os.geteuid()' in h and 'ERROR errno=' in h
 assert 'Os.accept(listen,new InetSocketAddress(0))' in h
 assert 'RECV_OK protocol=' in h
 assert 'new DatagramSocket(null)' in e # sending only, never fallback receiver
-assert 'install-loop' in e and 'install-local' in e
+assert 'install-loop' in e and 'install-local' in e and 'install-dns' in e
+assert 'DnsPacket.probeQuestion()' in e and 'DnsPacket.validQuestion(query)' in h
 assert e.index('"UDP","DIRECT"') < e.index('"install-loop"')
 assert e.index('loopUdp=single') < e.index('"install-local"')
 assert 'if(!clean || !loopUdp || !loopTcp)' in e

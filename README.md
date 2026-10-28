@@ -1,3 +1,11 @@
+# DNS Observer v0.5.7 — App UID 隔离 DNS53 查询捕获
+
+- v0.5.6 回环和本机非回环 UDP/TCP 实机测试全部成功。本版增加第三阶段：在前两阶段成功且已验证清理后，使用 2001:db8:ffff::53、端口 53、DNS Observer 自身 UID 的严格匹配规则，发送标准 example.com A DNS 查询，验证 Root IPv6 透明监听能收到完整合法 DNS 报文。
+- PREROUTING 额外限制独立 fwmark；不影响其他 App 的 DNS，不对外转发，不返回 DNS 响应，不代表全机 DNS 接管已实现。35 秒 Root watchdog 和一键恢复包含 53 专用测试规则的精确删除与残留校验。
+- 修改后脚本缓存名为 dns-ipv6-probe-v057.sh，避免旧版本缓存。仍保留 IPv4-only 正式接管兼容性。
+
+---
+
 # DNS Observer v0.5.6 — 修复 TCP 回环 EADDRINUSE
 
 根据 OnePlus 12 实测 v0.5.5 日志：Root TCP 直连 READY / RECV_OK，UDP TPROXY 回环成功，但 TCP TPROXY 回环绑定 ::1:15454 时返回 errno=98 (EADDRINUSE)。发生于 bind 阶段，尚未验证 TCP TPROXY 能力。

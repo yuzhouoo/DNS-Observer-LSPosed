@@ -61,6 +61,12 @@ p.write_text(json.dumps(s))
     assert snap()['chain'] and snap()['rule'] and snap()['route'] and len(snap()['entries'])==6
     r=call('recover');assert r.returncode==0,(r.stdout,r.stderr)
     assert 'VERIFY_CLEAN' in r.stdout and snap()=={'chain':False,'entries':[],'rule':False,'route':False}
+    r=call('install-dns');assert r.returncode==0,(r.stdout,r.stderr)
+    assert snap()['chain'] and snap()['rule'] and snap()['route'] and len(snap()['entries'])==6
+    assert any('--dport 53 ' in x and '-m owner --uid-owner 12345' in x for x in snap()['entries'])
+    assert any('--dport 53 ' in x and '-m mark --mark' in x for x in snap()['entries'])
+    r=call('recover');assert r.returncode==0,(r.stdout,r.stderr)
+    assert 'VERIFY_CLEAN' in r.stdout and snap()=={'chain':False,'entries':[],'rule':False,'route':False}
     assert call('recover').returncode==0 # idempotent
     # Collision: disallow reserved policy priority owned by another component.
     present=snap();present['rule']=True;state.write_text(json.dumps(present))

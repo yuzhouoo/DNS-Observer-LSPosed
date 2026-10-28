@@ -23,7 +23,7 @@ import java.util.concurrent.TimeUnit;
 /** Isolated IPv6 loopback + synthetic locally-originated TPROXY experiment.
  * NEVER intercepts real DNS port 53. Every stage is explicitly rolled back. */
 public final class DnsIpv6Experiment {
-    private static final String SCRIPT_NAME="dns-ipv6-probe-v055.sh";
+    private static final String SCRIPT_NAME="dns-ipv6-probe-v057.sh";
     private static final int TEST_PORT=15453, LISTEN_PORT=15454;
     private static final int DIRECT_TCP_PORT=15455;
     private static final String DOC_IP="2001:db8:ffff::53";
@@ -43,7 +43,7 @@ public final class DnsIpv6Experiment {
         return f;
     }
     private static String root(Context ctx,String mode,String token,int seconds) throws Exception {
-        if(!mode.matches("install-loop|install-local|recover|status")||!token.matches("[A-Za-z0-9_-]{1,64}"))
+        if(!mode.matches("install-loop|install-local|install-dns|recover|status")||!token.matches("[A-Za-z0-9_-]{1,64}"))
             throw new IllegalArgumentException("Invalid experiment arguments");
         String path=script(ctx).getAbsolutePath();
         if(!path.matches("/[a-zA-Z0-9_./-]+"))throw new IllegalArgumentException("unsafe path");
@@ -96,7 +96,9 @@ public final class DnsIpv6Experiment {
         }
     }
     private static void send(String proto,String stage,String token,InetAddress address,int port) throws Exception {
-        byte[] payload=("DNS6-"+proto+"-"+stage+"-"+token).getBytes(StandardCharsets.US_ASCII);
+        boolean dns53="DNS53".equals(stage);
+        byte[] payload=dns53?DnsPacket.probeQuestion():
+                ("DNS6-"+proto+"-"+stage+"-"+token).getBytes(StandardCharsets.US_ASCII);
         if("UDP".equals(proto)){
             try(DatagramSocket socket=new DatagramSocket(null)){
                 socket.bind(new InetSocketAddress(InetAddress.getByName("::"),0));
@@ -105,6 +107,7 @@ public final class DnsIpv6Experiment {
         } else {
             try(Socket tcp=new Socket()){
                 tcp.connect(new InetSocketAddress(address,port),3500);
+                if(dns53){tcp.getOutputStream().write((payload.length>>>8)&255);tcp.getOutputStream().write(payload.length&255);}
                 tcp.getOutputStream().write(payload);
                 tcp.getOutputStream().flush();
             }
@@ -113,13 +116,13 @@ public final class DnsIpv6Experiment {
     private static boolean single(Context ctx,String token,String proto,String stage,StringBuilder report) {
         java.lang.Process proc=null;
         BlockingQueue<String> queue=new LinkedBlockingQueue<>();
-        String name=proto+" "+("DIRECT".equals(stage)?"基础回环":("LOOP".equals(stage)?"TPROXY 回环":"本机非回环"));
+        String name=proto+" "+("DIRECT".equals(stage)?"基础回环":("LOOP".equals(stage)?"TPROXY 回环":("DNS53".equals(stage)?"App 专属 DNS53 请求捕获":"本机非回环"));
         try {
             proc=listener(ctx,token,proto,stage,queue);
             String ready=waitFor(queue,"READY",6000,report);
             if(!"OK".equals(ready)){report.append(name).append("：透明 Socket 未就绪（").append(ready).append("）\n");return false;}
-            InetAddress target=InetAddress.getByName("LOCAL".equals(stage)?DOC_IP:"::1");
-            int sendPort="DIRECT".equals(stage)?("TCP".equals(proto)?DIRECT_TCP_PORT:LISTEN_PORT):TEST_PORT;
+            InetAddress target=InetAddress.getByName(("LOCAL".equals(stage)||"DNS53".equals(stage))?DOC_IP:"::1");
+            int sendPort="DIRECT".equals(stage)?("TCP".equals(proto)?DIRECT_TCP_PORT:LISTEN_PORT):("DNS53".equals(stage)?53:TEST_PORT);
             send(proto,stage,token,target,sendPort);
             String observed=waitFor(queue,"RECV_OK",5000,report);
             boolean success="OK".equals(observed);
@@ -157,7 +160,7 @@ public final class DnsIpv6Experiment {
     }
     public static String run(Context ctx){
         String token=UUID.randomUUID().toString().replace("-","");
-        StringBuilder report=new StringBuilder("IPv6 TPROXY 分阶段现场实验 v0.5.6\n仅合成端口 15453 / 透明监听 15454，绝不拦截真实 DNS 53。\n");
+        StringBuilder report=new StringBuilder("IPv6 TPROXY 分阶段现场实验 v0.5.7\n先测合成流量，再仅匹配本 App UID 发往文档地址的 DNS53 请求；不拦截其他 App，不返回 DNS 应答。\n");
         boolean clean=true;
         try {
             boolean udp=single(ctx,token,"UDP","DIRECT",report);
@@ -175,19 +178,29 @@ public final class DnsIpv6Experiment {
                 if(!clean || !loopUdp || !loopTcp) {
                     report.append("回环阶段或残留核对未通过；跳过本机非回环策略路由实验。\n");
                 } else {
+                    boolean localUdp=false,localTcp=false;
                     try {
                         report.append(root(ctx,"install-local",token,10)).append('\n');
-                        single(ctx,token,"UDP","LOCAL",report);
-                        single(ctx,token,"TCP","LOCAL",report);
+                        localUdp=single(ctx,token,"UDP","LOCAL",report);
+                        localTcp=single(ctx,token,"TCP","LOCAL",report);
                         stageStatus(ctx,token,report);
                     } finally {clean=cleanup(ctx,report);}
                     if(!clean)report.append("注意：本机路由阶段存在清理异常，请点击一键恢复并核查！\n");
+                    if(clean && localUdp && localTcp) {
+                        try {
+                            report.append(root(ctx,"install-dns",token,10)).append('\n');
+                            boolean dnsUdp=single(ctx,token,"UDP","DNS53",report);
+                            boolean dnsTcp=single(ctx,token,"TCP","DNS53",report);
+                            stageStatus(ctx,token,report);
+                            report.append("DNS53 报文捕获：").append(dnsUdp&&dnsTcp?"UDP/TCP 全部通过":"存在失败").append('\n');
+                        } finally {clean=cleanup(ctx,report);}
+                    } else report.append("前置本机流量或清理检查失败，跳过 DNS53 阶段。\n");
                 }
             }
         }catch(Throwable e){report.append("实验异常：").append(e.getClass().getSimpleName())
                 .append(' ').append(e.getMessage()).append('\n');}
         finally{cleanup(ctx,report);}
-        return report.append("结论边界：仅验证临时回环/文档 IPv6 目标的单一端口；不能证明全机 IPv6 DNS 接管已实现。")
+        return report.append("结论边界：DNS53 只检验本 App 发往文档地址的真实 DNS 查询能否到达透明 Socket；尚未验证响应返回、上游转发或全机接管。")
                 .toString();
     }
 }

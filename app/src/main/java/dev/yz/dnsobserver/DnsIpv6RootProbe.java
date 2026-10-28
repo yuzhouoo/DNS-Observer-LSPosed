@@ -24,7 +24,7 @@ public final class DnsIpv6RootProbe {
     }
     public static void main(String[] args) {
         if(args.length!=3 || !args[0].matches("[a-zA-Z0-9_-]{1,64}")
-                || !args[1].matches("UDP|TCP") || !args[2].matches("DIRECT|LOOP|LOCAL")) {
+                || !args[1].matches("UDP|TCP") || !args[2].matches("DIRECT|LOOP|LOCAL|DNS53")) {
             say("ERROR bad-arguments");return;
         }
         String proto=args[1],stage=args[2];
@@ -51,11 +51,27 @@ public final class DnsIpv6RootProbe {
                 Os.setsockoptTimeval(accepted,OsConstants.SOL_SOCKET,OsConstants.SO_RCVTIMEO,
                         StructTimeval.fromMillis(4000));
             }
-            int size=Os.read(tcp?accepted:listen,data,0,data.length);
-            String expected="DNS6-"+proto+"-"+stage+"-"+args[0];
-            String got=new String(data,0,size,StandardCharsets.US_ASCII);
-            if(expected.equals(got))outcome="RECV_OK protocol="+proto+" stage="+stage+" bytes="+size;
-            else outcome="RECV_MISMATCH protocol="+proto+" stage="+stage+" bytes="+size;
+            int size;
+            if("DNS53".equals(stage) && tcp) {
+                byte[] frame=new byte[2];int have=0;
+                while(have<2) { int n=Os.read(accepted,frame,have,2-have); if(n<=0)throw new IllegalStateException("DNS TCP short length");have+=n; }
+                int want=((frame[0]&255)<<8)|(frame[1]&255);
+                if(want<17||want>data.length)throw new IllegalStateException("DNS TCP invalid frame "+want);
+                have=0;
+                while(have<want) { int n=Os.read(accepted,data,have,want-have);if(n<=0)throw new IllegalStateException("DNS TCP truncated frame");have+=n; }
+                size=have;
+            } else size=Os.read(tcp?accepted:listen,data,0,data.length);
+            if("DNS53".equals(stage)) {
+                byte[] query=java.util.Arrays.copyOf(data,size);
+                outcome=DnsPacket.validQuestion(query)
+                    ?"RECV_OK protocol="+proto+" stage=DNS53 dns_question_valid=1 bytes="+size
+                    :"RECV_MISMATCH protocol="+proto+" stage=DNS53 invalid_question bytes="+size;
+            } else {
+                String expected="DNS6-"+proto+"-"+stage+"-"+args[0];
+                String got=new String(data,0,size,StandardCharsets.US_ASCII);
+                if(expected.equals(got))outcome="RECV_OK protocol="+proto+" stage="+stage+" bytes="+size;
+                else outcome="RECV_MISMATCH protocol="+proto+" stage="+stage+" bytes="+size;
+            }
         }catch(ErrnoException e){outcome="ERROR errno="+e.errno+" "+e.getMessage();}
         catch(Throwable t){outcome="ERROR "+t.getClass().getSimpleName()+" "+String.valueOf(t.getMessage());}
         finally {

@@ -83,11 +83,11 @@ jobs:
           print('Verified: Modern API 102 resources included; no legacy entry')
           PY
       - name: Package complete source snapshot
-        run: git archive --format=zip --output=DNSObserver-v0.5.6-source.zip HEAD
+        run: git archive --format=zip --output=DNSObserver-v0.5.7-source.zip HEAD
       - uses: actions/upload-artifact@v4
         with:
-          name: DNSObserver-v0.5.6-source
-          path: DNSObserver-v0.5.6-source.zip
+          name: DNSObserver-v0.5.7-source
+          path: DNSObserver-v0.5.7-source.zip
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
