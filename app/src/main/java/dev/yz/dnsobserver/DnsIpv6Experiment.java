@@ -116,7 +116,7 @@ public final class DnsIpv6Experiment {
     private static boolean single(Context ctx,String token,String proto,String stage,StringBuilder report) {
         java.lang.Process proc=null;
         BlockingQueue<String> queue=new LinkedBlockingQueue<>();
-        String name=proto+" "+("DIRECT".equals(stage)?"基础回环":("LOOP".equals(stage)?"TPROXY 回环":("DNS53".equals(stage)?"App 专属 DNS53 请求捕获":"本机非回环"));
+        String name=proto+" "+("DIRECT".equals(stage)?"基础回环":("LOOP".equals(stage)?"TPROXY 回环":("DNS53".equals(stage)?"App 专属 DNS53 请求捕获":"本机非回环")));
         try {
             proc=listener(ctx,token,proto,stage,queue);
             String ready=waitFor(queue,"READY",6000,report);
