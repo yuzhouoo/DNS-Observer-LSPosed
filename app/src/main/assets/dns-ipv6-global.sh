@@ -81,7 +81,7 @@ case "$MODE" in
         case "$pid" in ''|*[!0-9]*) continue;; esac
         [ "$pid" -gt 1 ] || continue
         [ -r "$proc/cmdline" ] && [ -r "$proc/status" ] || continue
-        cmd="$(tr '\\000' ' ' < "$proc/cmdline" 2>/dev/null)"
+        cmd="$(tr '\000' ' ' < "$proc/cmdline" 2>/dev/null)"
         case "$cmd" in
             *dev.yz.dnsobserver.DnsIpv6GlobalDaemon*|*dobs6_*) ;;
             *) continue;;
@@ -98,7 +98,7 @@ case "$MODE" in
     # This process may be unrelated. Require this exact app session token
     # in its command line; never use pkill -f or kill an unverified PID.
     if [ ! -r "/proc/$TARGET_PID/cmdline" ]; then echo 'PROCESS_STOPPED: PID absent'; exit 0; fi
-    owned_cmd="$(tr '\\000' ' ' < "/proc/$TARGET_PID/cmdline" 2>/dev/null)"
+    owned_cmd="$(tr '\000' ' ' < "/proc/$TARGET_PID/cmdline" 2>/dev/null)"
     case "$owned_cmd" in
        *dobs6_"$TOKEN"*|*dev.yz.dnsobserver.DnsIpv6GlobalDaemon*"$TOKEN"*) ;;
        *) echo 'PROCESS_STOP_REFUSED: PID/token ownership not verified' >&2; exit 13;;
@@ -109,7 +109,7 @@ case "$MODE" in
         sleep 1; n=$((n+1))
     done
     if kill -0 "$TARGET_PID" 2>/dev/null; then
-        current="$(tr '\\000' ' ' < "/proc/$TARGET_PID/cmdline" 2>/dev/null)"
+        current="$(tr '\000' ' ' < "/proc/$TARGET_PID/cmdline" 2>/dev/null)"
         case "$current" in
            *dobs6_"$TOKEN"*|*dev.yz.dnsobserver.DnsIpv6GlobalDaemon*"$TOKEN"*) kill -KILL "$TARGET_PID" 2>/dev/null || true;;
            *) echo 'PROCESS_STOP_REFUSED: PID changed before SIGKILL' >&2; exit 13;;
