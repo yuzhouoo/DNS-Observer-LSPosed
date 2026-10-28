@@ -75,7 +75,7 @@ case "$MODE" in
     # Explicit user STOP only. Kill exclusively DNS Observer global Root
     # processes identified by their exact Java class or our unique nice-name.
     # Never kill all app_process instances and never terminate by port alone.
-    count=0
+    count=0; pending=""
     for proc in /proc/[0-9]*; do
         pid="${proc##*/}"
         case "$pid" in ''|*[!0-9]*) continue;; esac
@@ -88,9 +88,27 @@ case "$MODE" in
         esac
         owner="$(awk '/^Uid:/ {print $2; exit}' "$proc/status" 2>/dev/null)"
         [ "$owner" = 0 ] || continue
-        kill -TERM "$pid" 2>/dev/null && count=$((count+1))
+        if kill -TERM "$pid" 2>/dev/null; then
+            count=$((count+1)); pending="$pending $pid"
+        fi
     done
-    echo "OWNED_DAEMON_STOP: requested TERM for $count verified DNS Observer Root processes"
+    # A Root app_process may linger briefly after su exits; wait before
+    # declaring the address free, then revalidate identity before any KILL.
+    if [ "$count" -gt 0 ]; then sleep 1; fi
+    remaining=0
+    for pid in $pending; do
+        [ -r "/proc/$pid/cmdline" ] && [ -r "/proc/$pid/status" ] || continue
+        cmd="$(tr '\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null)"
+        case "$cmd" in
+            *dev.yz.dnsobserver.DnsIpv6GlobalDaemon*|*dobs6_*) ;;
+            *) continue;;
+        esac
+        owner="$(awk '/^Uid:/ {print $2; exit}' "/proc/$pid/status" 2>/dev/null)"
+        [ "$owner" = 0 ] || continue
+        kill -KILL "$pid" 2>/dev/null || true
+        remaining=$((remaining+1))
+    done
+    echo "OWNED_DAEMON_STOP: verified=$count forced=$remaining (PID ownership checked)"
     ;;
  stop-process)
     case "$TARGET_PID" in ''|*[!0-9]*) echo 'PROCESS_STOP_REFUSED: invalid PID' >&2; exit 13;; esac
