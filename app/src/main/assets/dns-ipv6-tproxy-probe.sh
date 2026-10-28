@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# v0.5.5 ONLY: exact UDP/TCP synthetic ports, ::1 or documentation IPv6 address.
+# v0.6.0: includes explicit 150s multi-query pilot; UID/document destination only.
 # Independent watchdog; never edits existing Android tables/chains/fwmarks.
 set -u
 MODE="${1:-}"; UID_ARG="${2:-}"; TOKEN="${3:-}"
@@ -7,7 +7,7 @@ CHAIN=DO6TST55
 LOOP='::1/128'; TEST_ADDR='2001:db8:ffff::53/128'; TEST_IP='2001:db8:ffff::53'
 PORT=15453; DNS_PORT=53; PROXY=15454; TABLE=19753; PREF=15000; MARK='0x20000000/0x20000000'
 MARKER="/data/local/tmp/dobs6t55_${UID_ARG}.run"
-case "$MODE" in install-loop|install-local|install-dns|recover|status|watch) ;; *) exit 2;; esac
+case "$MODE" in install-loop|install-local|install-dns|install-pilot|recover|status|watch) ;; *) exit 2;; esac
 case "$UID_ARG" in ''|*[!0-9]*) exit 2;; esac
 case "$TOKEN" in ''|*[!a-zA-Z0-9_-]*) exit 2;; esac
 IP6="$(command -v ip6tables 2>/dev/null || true)"
@@ -91,7 +91,7 @@ case "$MODE" in
     echo 'Test route:'
     "$IP" -6 route show table "$TABLE" 2>&1
     ;;
- install-loop|install-local|install-dns)
+ install-loop|install-local|install-dns|install-pilot)
     if [ -f "$MARKER" ] || "$IP6" -t mangle -S "$CHAIN" >/dev/null 2>&1; then
         echo 'PRECHECK_FAILED: prior session remains; click recover' >&2; exit 4
     fi
@@ -101,7 +101,11 @@ case "$MODE" in
     if [ "$MODE" != install-loop ]; then
         if ! "$IP6" -t mangle -m owner -h >/dev/null 2>&1; then echo 'PRECHECK_FAILED: owner match unavailable' >&2; exit 4; fi
     fi
-    printf '%s\n' "$TOKEN" > "$MARKER" || exit 5
+    if [ "$MODE" = install-pilot ]; then
+        printf 'pilot:%s\n' "$TOKEN" > "$MARKER" || exit 5
+    else
+        printf '%s\n' "$TOKEN" > "$MARKER" || exit 5
+    fi
     chmod 600 "$MARKER" || true
     # Watchdog begins BEFORE firewall or routing changes.
     /system/bin/sh "$0" watch "$UID_ARG" "$TOKEN" </dev/null >/dev/null 2>&1 &
@@ -113,10 +117,10 @@ case "$MODE" in
         # Only this App UID, one RFC3849 documentation IPv6 destination, one port.
         "$IP" -6 route add local "$TEST_ADDR" dev lo table "$TABLE" || { clear_owned; exit 7; }
         "$IP" -6 rule add pref "$PREF" fwmark "$MARK" lookup "$TABLE" || { clear_owned; exit 8; }
-        if [ "$MODE" = install-dns ]; then match_port="$DNS_PORT"; else match_port="$PORT"; fi
+        if [ "$MODE" = install-dns ] || [ "$MODE" = install-pilot ]; then match_port="$DNS_PORT"; else match_port="$PORT"; fi
         for proto in udp tcp; do
             "$IP6" -t mangle -I OUTPUT 1 -d "$TEST_ADDR" -p "$proto" --dport "$match_port" -m owner --uid-owner "$UID_ARG" -j MARK --set-xmark "$MARK" || { clear_owned; exit 9; }
-            if [ "$MODE" = install-dns ]; then
+            if [ "$MODE" = install-dns ] || [ "$MODE" = install-pilot ]; then
                 "$IP6" -t mangle -I PREROUTING 1 -i lo -d "$TEST_ADDR" -p "$proto" --dport "$match_port" -m mark --mark "$MARK" -j "$CHAIN" || { clear_owned; exit 10; }
             else
                 "$IP6" -t mangle -I PREROUTING 1 -i lo -d "$TEST_ADDR" -p "$proto" --dport "$match_port" -j "$CHAIN" || { clear_owned; exit 10; }
@@ -127,15 +131,23 @@ case "$MODE" in
             "$IP6" -t mangle -I PREROUTING 1 -i lo -d "$LOOP" -p "$proto" --dport "$PORT" -j "$CHAIN" || { clear_owned; exit 10; }
         done
     fi
-    echo "INSTALLED: $MODE scoped TPROXY, watchdog 35s"
+    if [ "$MODE" = install-pilot ]; then
+        echo "INSTALLED: $MODE UID/document IPv6 DNS53 only, watchdog 180s"
+    else
+        echo "INSTALLED: $MODE scoped TPROXY, watchdog 35s"
+    fi
     ;;
  watch)
+    expected="$TOKEN"; deadline=35
+    if [ "$(cat "$MARKER" 2>/dev/null)" = "pilot:$TOKEN" ]; then
+        expected="pilot:$TOKEN"; deadline=180
+    fi
     n=0
-    while [ "$n" -lt 35 ]; do
-        [ "$(cat "$MARKER" 2>/dev/null)" = "$TOKEN" ] || exit 0
+    while [ "$n" -lt "$deadline" ]; do
+        [ "$(cat "$MARKER" 2>/dev/null)" = "$expected" ] || exit 0
         sleep 1; n=$((n+1))
     done
-    if [ "$(cat "$MARKER" 2>/dev/null)" = "$TOKEN" ]; then
+    if [ "$(cat "$MARKER" 2>/dev/null)" = "$expected" ]; then
         clear_owned
         if verify_clean; then rm -f "$MARKER"; fi
     fi

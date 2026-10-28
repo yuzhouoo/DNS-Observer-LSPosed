@@ -36,7 +36,7 @@ public final class DnsControlActivity extends Activity {
     private volatile boolean measuring;
     private volatile boolean ipv6ExperimentRunning;
     private CheckBox ipv6;
-    private TextView status, ipv6ExperimentResult;
+    private TextView status, ipv6ExperimentResult, ipv6PilotLog;
 
     /** Text selection works with long press; the button copies the complete current result. */
     private TextView selectable(TextView view) {
@@ -96,7 +96,7 @@ public final class DnsControlActivity extends Activity {
         LinearLayout root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(20),dp(16),dp(20),dp(24));scroll.addView(root);
         setContentView(scroll);
-        root.addView(label("DNS 接管 · v0.5.9",23,FG));
+        root.addView(label("DNS 接管 · v0.6.0-beta1",23,FG));
         root.addView(label("保留现有 LSPosed DNS 监控；接管仅作用于常规 UDP/TCP 53。\n需要 Root。默认关闭、不随系统开机启动。",13,SECOND));
         status=selectable(label("正在检查状态…",15,FG));root.addView(status);
         button("复制当前接管状态",root).setOnClickListener(v->copyVisibleText(status,"接管状态"));
@@ -110,7 +110,7 @@ public final class DnsControlActivity extends Activity {
         secondaryPort=field(root,"备 DNS 端口",prefs.getString("secondary_port","31017"));
         secondaryPort.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
         bootstrap=field(root,"Bootstrap DNS 纯 IP（域名刷新使用，可留空）",prefs.getString("bootstrap",""));
-        ipv6=new CheckBox(this);ipv6.setText("同时重定向 IPv6 DNS（实验性，需 ip6tables NAT）");
+        ipv6=new CheckBox(this);ipv6.setText("旧版 IPv6 NAT 重定向（本机内核不可用；与下方 TPROXY 试运行无关）");
         ipv6.setTextColor(FG);ipv6.setChecked(prefs.getBoolean("ipv6",false));
         root.addView(ipv6);
         root.addView(label("兼容性：IPv6 ip6tables NAT 不可用时，启动接管会明确降级为 IPv4-only，不影响独立 IPv6 测速。IPv6 TPROXY 需单独验证。",12,SECOND));
@@ -131,6 +131,9 @@ public final class DnsControlActivity extends Activity {
                 .setMessage("先完成原有回环、DNS53 捕获和离线应答实验；都通过后，在安装规则前检测已保存的主/从/备 DNS 服务器可用性，再用明确 IP/端口实际转发一次 UDP/TCP DNS 查询。只匹配本 App UID 与测试文档 IPv6 地址，不修改其他应用的 DNS；35 秒自动恢复。运行前请停止 DNS 接管。")
                 .setNegativeButton("取消",null)
                 .setPositiveButton("开始验证",(d,w)-> {
+                    if(DnsIpv6PilotController.isRunning()){
+                        status.setText("请先停止 v0.6.0 IPv6 试运行，再执行一次性验证");return;
+                    }
                     if(ipv6ExperimentRunning){
                         status.setText("已有 IPv6 实验正在运行，请勿重复提交");
                         return;
@@ -161,6 +164,35 @@ public final class DnsControlActivity extends Activity {
                     showExperimentLog(combined);
                 });
             },"DNS-IPv6-recover").start());
+        root.addView(label("IPv6 TPROXY 安全试运行（v0.6.0-beta1）",18,FG));
+        root.addView(label("仅 DNS Observer 本身 UID → 2001:db8:ffff::53:53 的查询。不劫持系统或其他 App。手动启动后可反复测试 UDP/TCP；Root 服务最长 145 秒，180 秒独立规则看门狗。可与原 IPv4 接管独立使用。",12,SECOND));
+        ipv6PilotLog=selectable(label(DnsIpv6PilotController.report(this),12,FG));
+        root.addView(ipv6PilotLog);
+        button("启动限时 IPv6 DNS 试运行",root).setOnClickListener(v->
+            new AlertDialog.Builder(this).setTitle("确认启动受限 IPv6 TPROXY 试运行？")
+                .setMessage("仅本 App UID 到文档 IPv6 地址/53；预检主从备上游后启动 Root UDP/TCP 代理。最长 145 秒，180 秒防护恢复，不能代表全机接管。")
+                .setNegativeButton("取消",null).setPositiveButton("开始",(d,w)->{
+                    if(ipv6ExperimentRunning){status.setText("正在执行一次性 IPv6 实验，请先结束");return;}
+                    persist();
+                    new Thread(()->{
+                        String result=DnsIpv6PilotController.start(getApplicationContext());
+                        ui.post(()->{if(!isDestroyed()){status.setText(result);ipv6PilotLog.setText(DnsIpv6PilotController.report(this));}});
+                    },"DNS-Pilot-start").start();
+                }).show());
+        button("IPv6 试运行：再次查询 UDP/TCP",root).setOnClickListener(v->new Thread(()->{
+            String result=DnsIpv6PilotController.test(getApplicationContext());
+            ui.post(()->{if(!isDestroyed()){status.setText(result);ipv6PilotLog.setText(DnsIpv6PilotController.report(this));}});
+        },"DNS-Pilot-test").start());
+        button("停止 IPv6 试运行并核查恢复",root).setOnClickListener(v->new Thread(()->{
+            String result=DnsIpv6PilotController.stop(getApplicationContext());
+            ui.post(()->{if(!isDestroyed()){status.setText(result);ipv6PilotLog.setText(DnsIpv6PilotController.report(this));}});
+        },"DNS-Pilot-stop").start());
+        button("刷新 / 查看 IPv6 试运行日志",root).setOnClickListener(v->
+                ipv6PilotLog.setText(DnsIpv6PilotController.report(this)));
+        button("复制完整 IPv6 试运行日志",root).setOnClickListener(v->{
+            ipv6PilotLog.setText(DnsIpv6PilotController.report(this));
+            copyVisibleText(ipv6PilotLog,"IPv6 试运行日志");
+        });
         button("启动 DNS 接管",root).setOnClickListener(v->new AlertDialog.Builder(this)
                 .setTitle("启用 Root DNS 接管？")
                 .setMessage("将重定向本机普通 UDP/TCP 53 请求。请确认你可以使用 KernelSU 或 Root 命令恢复网络。首次使用请关闭其它 DNS 重定向规则。")

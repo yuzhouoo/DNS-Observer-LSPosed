@@ -24,10 +24,9 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 
-/** Isolated IPv6 loopback + synthetic locally-originated TPROXY experiment.
- * NEVER intercepts real DNS port 53. Every stage is explicitly rolled back. */
+/** Isolated IPv6 TPROXY experiments; real port 53 is scoped to app UID/document IPv6 only. */
 public final class DnsIpv6Experiment {
-    private static final String SCRIPT_NAME="dns-ipv6-probe-v057.sh";
+    private static final String SCRIPT_NAME="dns-ipv6-probe-v060.sh";
     private static final int TEST_PORT=15453, LISTEN_PORT=15454;
     private static final int DIRECT_TCP_PORT=15455;
     private static final String DOC_IP="2001:db8:ffff::53";
@@ -46,8 +45,8 @@ public final class DnsIpv6Experiment {
             throw new IllegalStateException("无法保护 IPv6 实验脚本权限");
         return f;
     }
-    private static String root(Context ctx,String mode,String token,int seconds) throws Exception {
-        if(!mode.matches("install-loop|install-local|install-dns|recover|status")||!token.matches("[A-Za-z0-9_-]{1,64}"))
+    static String root(Context ctx,String mode,String token,int seconds) throws Exception {
+        if(!mode.matches("install-loop|install-local|install-dns|install-pilot|recover|status")||!token.matches("[A-Za-z0-9_-]{1,64}"))
             throw new IllegalArgumentException("Invalid experiment arguments");
         String path=script(ctx).getAbsolutePath();
         if(!path.matches("/[a-zA-Z0-9_./-]+"))throw new IllegalArgumentException("unsafe path");
