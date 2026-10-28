@@ -11,5 +11,5 @@ assert 'DnsProbe.measure(addr,port,protocol)' in exp
 assert 'DnsUpstreamExchange.permittedUpstream' in root
 assert 'DnsUpstreamExchange.query(upstream,port,proto,query)' in root
 assert 'Os.bind(replySocket,InetAddress.getByName(DOC_IP),DNS_PORT)' in root
-assert '2001:db8:' in helper
+assert '(b[0]&255)==0x20' in helper and '(b[2]&255)==0x0d' in helper and '(b[3]&255)==0xb8' in helper
 print("PASS: upstream configured-only, bounded IP, preflight before installation, Root reply path")
