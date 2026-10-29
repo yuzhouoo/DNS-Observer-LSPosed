@@ -96,6 +96,7 @@ public final class DnsTakeoverService extends Service {
         String action=intent==null?"":intent.getAction();
         if(ACTION_STOP.equals(action)){
             stopRequestId=startId;
+            if(stopped && "stopping".equals(uiPhase))return START_NOT_STICKY;
             stopped=true;uiPhase="stopping";DnsForwardService.cancelPendingStart();
             prefs().edit().putBoolean("takeover_enabled",false).commit();
             io.execute(this::stopAll);
