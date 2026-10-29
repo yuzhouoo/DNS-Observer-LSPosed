@@ -48,7 +48,7 @@ public final class DnsControlActivity extends Activity {
     private DnsUiSnapshot snapshot;
     private long checkedAt,pendingAt;
     private int snapshotVersion;
-    private String pendingPhase="";
+    private String pendingPhase="",ipv6OperationResult="";
     private boolean startDialogOpen;
     private ScrollView historyScroll;
     private Button speedHistoryToggle;
@@ -190,6 +190,8 @@ public final class DnsControlActivity extends Activity {
             "disabled".equals(system)?"已禁用 · 仅 IPv4":
             "enabled".equals(system)?"未禁用 · 接口允许 IPv6":
             "mixed".equals(system)?"部分接口禁用 · 非全局禁用":"待确认 · 请刷新状态";
+        if(ipv6Result!=null&&!ipv6Busy)ipv6Result.setText("当前状态："+systemLabel+
+            (ipv6OperationResult.isEmpty()?"":"\n上次操作结果：\n"+ipv6OperationResult));
         featureOverview.setText("DNS 记录："+records+"\nIPv4 DNS 接管："+v4.label+
             "\nIPv6 DNS 接管："+v6.label+"\n系统 IPv6："+systemLabel+
             "\n自动重新接管："+(repairSwitch!=null&&repairSwitch.isChecked()?"已开启":"已关闭")+
@@ -256,7 +258,7 @@ public final class DnsControlActivity extends Activity {
                 ipv6Busy=false;
                 if(isFinishing()||isDestroyed())return;
                 if(verified!=null)showIpv6State(verified);
-                result.setText(output+(verified==null?"":"\n当前内核状态：\n"+verified));
+                ipv6OperationResult=output;result.setText("上次操作结果：\n"+output);
                 ipv6Busy=false;refreshFeatureStates();
             });
         },"IPv6-system-toggle").start();
@@ -311,7 +313,7 @@ public final class DnsControlActivity extends Activity {
         root.addView(label("最近操作与接管事件",14,SECOND));
         status=selectable(label("暂无操作",14,FG));
         logArea(root,status,96);
-        button("复制当前接管状态",root).setOnClickListener(v->copyVisibleText(status,"接管状态"));
+        button("复制当前接管状态",root).setOnClickListener(v->copyText(featureOverview.getText()+"\n"+featureStamp.getText()+"\n"+status.getText(),"接管状态"));
 
         root.addView(label("系统网络 · IPv6 总开关（Root）",18,FG));
         root.addView(label("立即应用并校验全部接口及新接口默认值；关闭时恢复本次开机的原值。IPv6-only 网络可能断网；恢复地址需等待网络重新获取。",12,SECOND));
@@ -320,7 +322,7 @@ public final class DnsControlActivity extends Activity {
         systemIpv6.setEnabled(false);
         root.addView(systemIpv6);
         ipv6Result=selectable(label("正在读取内核状态…",12,SECOND));
-        root.addView(ipv6Result);
+        logArea(root,ipv6Result,96);
         systemIpv6.setOnCheckedChangeListener((b,disable)->toggleIpv6FromUi(systemIpv6,ipv6Result,disable));
         ipv6Refresh=button("刷新 IPv6 内核状态",root);ipv6Refresh.setOnClickListener(v->refreshIpv6State());
         host=field(root,"主 DNS 域名（不带协议、端口）",prefs.getString("host",""));
