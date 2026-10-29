@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# Snapshot and restore only disable_ipv6. Never alter DNS takeover rules.
+# Explicit disable/enable of disable_ipv6, with a per-operation rollback snapshot.
 set -u
 dir=/proc/sys/net/ipv6/conf
 home=/data/adb/dnsobserver-ipv6
@@ -58,6 +58,8 @@ report() {
     [ -n "$values" ] || { echo IPV6_STATUS_UNKNOWN; return 1; }
     if printf '%s\n' "$values" | awk '$2!=1 {exit 1}'; then
         echo IPV6_DISABLED
+    elif printf '%s\n' "$values" | awk '$2!=0 {exit 1}'; then
+        echo IPV6_ENABLED
     else
         echo IPV6_NOT_FULLY_DISABLED
     fi
@@ -110,19 +112,16 @@ if [ "$mode" = on ]; then
     awk '{print $1, 1}' "$before" > "$home/target" || exit 2
     target=$home/target
 else
-    if [ ! -f "$state" ]; then
-        echo NO_SAVED_STATE
-        report
-        exit 4
-    fi
-    validate "$state" || exit 2
-    target=$state
+    # OFF means explicitly enable IPv6, even if the old saved state was disabled
+    # or no original snapshot exists (e.g. an earlier app/module changed it).
+    awk '{print $1, 0}' "$before" > "$home/target" || exit 2
+    target=$home/target
 fi
 active=1
 restore "$target" && verify "$target" || { echo APPLY_FAILED; exit 3; }
 if [ "$mode" = off ]; then
     rm -f "$state" || exit 3
-    echo IPV6_RESTORED
+    echo IPV6_ENABLED_VERIFIED
 fi
 active=0
 report

@@ -31,7 +31,9 @@ with TemporaryDirectory() as tmp:
     marker=root/'dobsr53_12345.run';marker.write_text('orphan');assert read()['V4']=='present';marker.unlink()
     for p in conf.glob('*/disable_ipv6'):p.write_text('1\n')
     assert read()['SYSTEM']=='disabled'
-    (conf/'wlan0/disable_ipv6').write_text('0\n');assert read()['SYSTEM']=='mixed'
+    (conf/'wlan0/disable_ipv6').write_text('0\n');assert read()['SYSTEM']=='blocked'
+    (conf/'all/disable_ipv6').write_text('0\n');assert read()['SYSTEM']=='blocked'
+    (conf/'default/disable_ipv6').write_text('0\n');assert read()['SYSTEM']=='mixed'
     (conf/'wlan0/disable_ipv6').write_text('bad\n');assert read()['SYSTEM']=='unknown'
     assert call(MOCK_UID='10000').returncode!=0
     # The status probe must not invoke any write-capable firewall or routing commands.

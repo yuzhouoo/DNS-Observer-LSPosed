@@ -22,11 +22,15 @@ if rules=$(ip6tables -w 2 -t mangle -S 2>/dev/null) && routes=$(ip -6 rule show 
     fi
 else echo V6=unknown; fi
 zero=0; one=0; bad=0
+global_all=unknown; global_default=unknown
 for f in /proc/sys/net/ipv6/conf/*/disable_ipv6; do
     [ -f "$f" ] || continue
-    case "$(cat "$f" 2>/dev/null)" in 0) zero=$((zero+1));; 1) one=$((one+1));; *) bad=1;; esac
+    value=$(cat "$f" 2>/dev/null)
+    case "$f" in */all/disable_ipv6) global_all=$value;; */default/disable_ipv6) global_default=$value;; esac
+    case "$value" in 0) zero=$((zero+1));; 1) one=$((one+1));; *) bad=1;; esac
 done
 if [ "$bad" = 1 ] || [ "$((zero+one))" = 0 ]; then echo SYSTEM=unknown
 elif [ "$zero" = 0 ]; then echo SYSTEM=disabled
+elif [ "$global_all" != 0 ] || [ "$global_default" != 0 ]; then echo SYSTEM=blocked
 elif [ "$one" = 0 ]; then echo SYSTEM=enabled
 else echo SYSTEM=mixed; fi

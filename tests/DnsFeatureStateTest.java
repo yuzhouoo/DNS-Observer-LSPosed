@@ -19,6 +19,7 @@ public final class DnsFeatureStateTest {
         DnsFeatureState off=DnsFeatureState.OFF;
         check(!DnsFeatureState.mayStart(false,"idle",false,true,false,true,off,off,"disabled"),"IPv6 conflict blocked");
         check(!DnsFeatureState.mayStart(false,"idle",false,true,false,true,off,off,"unknown"),"unknown IPv6 blocked");
+        check(!DnsFeatureState.mayStart(false,"idle",false,true,false,true,off,off,"blocked"),"partial global disable blocks IPv6 takeover");
         check(DnsFeatureState.mayStart(false,"idle",false,true,false,true,off,off,"mixed"),"normal mixed interfaces may use IPv6");
         check(DnsFeatureState.mayStart(false,"idle",false,true,true,true,off,off,"enabled"),"clean dual protocol start");
         check(!DnsFeatureState.mayStart(true,"idle",false,true,true,false,off,off,"enabled"),"duplicate start blocked");

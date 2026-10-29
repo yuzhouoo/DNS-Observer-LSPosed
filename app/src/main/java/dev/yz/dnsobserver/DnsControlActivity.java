@@ -43,7 +43,7 @@ public final class DnsControlActivity extends Activity {
     private TextView ipv6Result;
     private static volatile boolean ipv6Busy;
     private boolean checkingFeatures, ruleBusy;
-    private Button startButton,stopButton,speedButton,ruleButton,ipv6Refresh,featureRefresh;
+    private Button startButton,stopButton,speedButton,ruleButton,ipv6Refresh,featureRefresh,systemEnableButton;
     private TextView featureOverview,selectionHint,speedStatus,featureStamp;
     private DnsUiSnapshot snapshot;
     private long checkedAt,pendingAt;
@@ -188,6 +188,7 @@ public final class DnsControlActivity extends Activity {
         String records=!enabled?"已暂停":live?"记录中":"已开启，系统端未连接";
         String systemLabel=ipv6Busy?"正在应用并校验":
             "disabled".equals(system)?"已禁用 · 仅 IPv4":
+            "blocked".equals(system)?"全局开关仍禁用 · 请启用系统 IPv6":
             "enabled".equals(system)?"未禁用 · 接口允许 IPv6":
             "mixed".equals(system)?"部分接口禁用 · 非全局禁用":"待确认 · 请刷新状态";
         if(ipv6Result!=null&&!ipv6Busy)ipv6Result.setText("当前状态："+systemLabel+
@@ -221,7 +222,7 @@ public final class DnsControlActivity extends Activity {
             "stopping".equals(current)?"正在关闭，请稍候…":session?"接管会话已请求 · 查看各协议校验状态":
             checkingFeatures?"正在核对状态…":!fresh?"请先刷新状态":
             v4!=DnsFeatureState.OFF||v6!=DnsFeatureState.OFF?"状态异常或未确认 · 请先检查 / 清理":
-            takeIpv6!=null&&takeIpv6.isChecked()&&("disabled".equals(system)||"unknown".equals(system))?"请先恢复系统 IPv6，再启用 IPv6 接管":
+            takeIpv6!=null&&takeIpv6.isChecked()&&("disabled".equals(system)||"blocked".equals(system)||"unknown".equals(system))?"请先恢复系统 IPv6，再启用 IPv6 接管":
             !configReady?"请完善 DNS / 端口 / Bootstrap 配置":selected.isEmpty()?"请先选择接管协议":"开启所选 DNS 接管";
         paint(startButton,startTitle,canStart,false);
         boolean clean=fresh&&v4==DnsFeatureState.OFF&&v6==DnsFeatureState.OFF&&!session;
@@ -230,11 +231,17 @@ public final class DnsControlActivity extends Activity {
         boolean v6Conflict=takeIpv6!=null && (session&&selected6 || fresh&&"present".equals(snapshot.v6));
         systemIpv6.setEnabled(fresh&&!"unknown".equals(system)&&!checkingFeatures&&!ipv6Busy&&!lifecycleBusy&&!measuring&&!v6Conflict);
         if(!ipv6Busy){
-            systemIpv6.setOnCheckedChangeListener(null);systemIpv6.setChecked("disabled".equals(system));
+            systemIpv6.setOnCheckedChangeListener(null);systemIpv6.setChecked("disabled".equals(system)||"blocked".equals(system));
             systemIpv6.setOnCheckedChangeListener((b,on)->toggleIpv6FromUi(systemIpv6,ipv6Result,on));
         }
         systemIpv6.setText(ipv6Busy?"系统 IPv6 · 处理中…":v6Conflict?"禁用 IPv6 · 请先关闭 IPv6 接管":
-            "disabled".equals(system)?"禁用 IPv6 · 已开启（仅 IPv4）":"禁用 IPv6 · "+("unknown".equals(system)?"待确认":"未开启"));
+            "disabled".equals(system)?"禁用 IPv6 · 已开启（仅 IPv4）":
+            "blocked".equals(system)?"禁用 IPv6 · 全局开关仍禁用":"禁用 IPv6 · "+("unknown".equals(system)?"待确认":"未开启"));
+        if(systemEnableButton!=null){
+            systemEnableButton.setVisibility("enabled".equals(system)?View.GONE:View.VISIBLE);
+            paint(systemEnableButton,ipv6Busy?"正在应用并校验 IPv6…":v6Conflict?"请先关闭全部 DNS 接管，再启用 IPv6":"启用系统 IPv6（全部接口）",
+                fresh&&!"unknown".equals(system)&&!checkingFeatures&&!ipv6Busy&&!lifecycleBusy&&!measuring&&!v6Conflict,false);
+        }
         paint(ipv6Refresh,checkingFeatures?"正在核对 IPv6 状态…":"刷新 IPv6 内核状态",!checkingFeatures&&!ipv6Busy&&!lifecycleBusy,false);
         paint(featureRefresh,checkingFeatures?"正在刷新所有功能状态…":"刷新所有功能状态",!checkingFeatures&&!ipv6Busy&&!lifecycleBusy,false);
         paint(speedButton,measuring?"正在测速… · 请等待结果":"开始主 / 从 / 备测速",!measuring&&!ipv6Busy&&!lifecycleBusy,false);
@@ -316,7 +323,7 @@ public final class DnsControlActivity extends Activity {
         button("复制当前接管状态",root).setOnClickListener(v->copyText(featureOverview.getText()+"\n"+featureStamp.getText()+"\n"+status.getText(),"接管状态"));
 
         root.addView(label("系统网络 · IPv6 总开关（Root）",18,FG));
-        root.addView(label("立即应用并校验全部接口及新接口默认值；关闭时恢复本次开机的原值。IPv6-only 网络可能断网；恢复地址需等待网络重新获取。",12,SECOND));
+        root.addView(label("开关开启：全部接口禁用 IPv6；开关关闭：全部接口启用 IPv6，立即写入并校验。失败恢复操作前状态。地址恢复需等待网络重新获取。",12,SECOND));
         systemIpv6=new Switch(this);
         systemIpv6.setText("禁用 IPv6（仅 IPv4）");systemIpv6.setTextColor(FG);
         systemIpv6.setEnabled(false);
@@ -324,6 +331,8 @@ public final class DnsControlActivity extends Activity {
         ipv6Result=selectable(label("正在读取内核状态…",12,SECOND));
         logArea(root,ipv6Result,96);
         systemIpv6.setOnCheckedChangeListener((b,disable)->toggleIpv6FromUi(systemIpv6,ipv6Result,disable));
+        systemEnableButton=button("启用系统 IPv6（全部接口）",root);
+        systemEnableButton.setOnClickListener(v->toggleIpv6FromUi(systemIpv6,ipv6Result,false));
         ipv6Refresh=button("刷新 IPv6 内核状态",root);ipv6Refresh.setOnClickListener(v->refreshIpv6State());
         host=field(root,"主 DNS 域名（不带协议、端口）",prefs.getString("host",""));
         port=field(root,"主 DNS 端口",prefs.getString("port","31017"));
@@ -493,7 +502,7 @@ public final class DnsControlActivity extends Activity {
             checkedHost();checkedPort();
             if(!takeIpv4.isChecked()&&!takeIpv6.isChecked())
                 throw new IllegalArgumentException("请至少勾选 IPv4 或 IPv6");
-            if(takeIpv6.isChecked() && (snapshot==null || "disabled".equals(snapshot.system) || "unknown".equals(snapshot.system)))
+            if(takeIpv6.isChecked() && (snapshot==null || !("enabled".equals(snapshot.system)||"mixed".equals(snapshot.system))))
                 throw new IllegalArgumentException("请先恢复系统 IPv6，并刷新状态");
             persist();
             setPending("starting");

@@ -52,45 +52,47 @@ if name=='all':
     assert set(values().values()) == {1}
     saved = (home/'original').read_bytes()
     ok('on')
-    assert (home/'original').read_bytes() == saved, 'reapply must preserve original values'
+    assert (home/'original').read_bytes() == saved
     node('new0', 1)
-    assert 'IPV6_RESTORED' in ok('off')
-    assert values() == dict(original, new0=0), values()
+    assert 'IPV6_ENABLED_VERIFIED' in ok('off')
+    assert set(values().values()) == {0}, values()
     assert not (home/'original').exists()
-    assert call('off').returncode == 4, 'no invented restore state'
-    # Partial disable failure restores a mixed starting state, including all propagation.
-    fault.write_text('wlan0')
-    r = call('on')
-    assert r.returncode != 0 and 'ROLLBACK_OK' in r.stdout, (r.stdout, r.stderr)
-    assert values() == dict(original, new0=0)
+    # Explicit enable does not depend on a backup. Repeated OFF is idempotent.
+    ok('off'); assert set(values().values()) == {0}
+    # Exact user regression: all/default/lo=1 and the historical saved values are also 1.
+    for name in values():node(name,1)
     ok('on')
-    disabled = values()
-    fault.write_text('wlan0')
-    r = call('off')
-    assert r.returncode != 0 and 'ROLLBACK_OK' in r.stdout, (r.stdout, r.stderr)
-    assert values() == disabled and (home/'original').exists()
-    ok('off')
-    # Detect external changes instead of trusting app preferences.
-    ok('on'); node('wlan0', 0)
+    assert all(line.endswith(' 1') for line in (home/'original').read_text().splitlines())
+    ok('off'); assert set(values().values()) == {0}
+    # Same regression when there is no saved state at all.
+    for name in values():node(name,1)
+    assert not (home/'original').exists()
+    ok('off'); assert set(values().values()) == {0}
+    # Partial disable failure restores the exact mixed starting state, not all zeros.
+    for k,v in original.items():node(k,v)
+    before=values()
+    fault.write_text('wlan0');r=call('on')
+    assert r.returncode != 0 and 'ROLLBACK_OK' in r.stdout,(r.stdout,r.stderr)
+    assert values()==before
+    ok('on');disabled=values()
+    # A failed explicit enable returns to fully disabled, retaining recovery data.
+    fault.write_text('wlan0');r=call('off')
+    assert r.returncode != 0 and 'ROLLBACK_OK' in r.stdout,(r.stdout,r.stderr)
+    assert values()==disabled and (home/'original').exists()
+    ok('off');assert set(values().values())=={0}
+    # An obsolete/corrupt historical backup cannot block explicit enable.
+    ok('on');(home/'original').write_text('../escape 0\n')
+    ok('off');assert set(values().values())=={0}
+    ok('on');node('wlan0',0)
     assert 'IPV6_NOT_FULLY_DISABLED' in ok('status')
-    ok('on'); assert set(values().values()) == {1}
-    # Corrupt snapshot must fail before any mutation.
-    (home/'original').write_text('../escape 0\n')
-    before = values(); assert call('off').returncode != 0; assert values() == before
-    # A new boot cannot restore stale per-interface state.
+    ok('on');assert set(values().values())=={1}
     boot.write_text('boot-two\n')
-    for k, v in original.items(): node(k, v)
-    assert call('off').returncode == 4
-    assert values()['wlan0'] == 0
-    # A live transaction cannot be overlapped.
-    (home/'lock').mkdir(); (home/'lock'/'pid').write_text(str(os.getpid()))
-    before = values(); assert call('on').returncode == 8; assert values() == before
-    (home/'lock'/'pid').unlink(); (home/'lock').rmdir()
-    # Rollback failures are explicitly surfaced and original recovery data retained.
-    # Inject a permanent failure after the operation has already written all/default.
-    script = script.replace('python3 "'+str(writer)+'" "$dir" "$1" "$2"',
-                            '[ "$1" != wlan0 ] || return 1\n    python3 "'+str(writer)+'" "$dir" "$1" "$2"')
-    r = call('on')
-    assert r.returncode == 9 and 'ROLLBACK_FAILED' in r.stdout
+    ok('off');assert set(values().values())=={0}
+    (home/'lock').mkdir();(home/'lock'/'pid').write_text(str(os.getpid()))
+    before=values();assert call('on').returncode==8;assert values()==before
+    (home/'lock'/'pid').unlink();(home/'lock').rmdir()
+    script=script.replace('python3 "'+str(writer)+'" "$dir" "$1" "$2"',
+                         '[ "$1" != wlan0 ] || return 1\n    python3 "'+str(writer)+'" "$dir" "$1" "$2"')
+    r=call('on');assert r.returncode==9 and 'ROLLBACK_FAILED' in r.stdout
     assert (home/'original').exists() and (home/'before').exists()
-print('PASS: system IPv6 immediate apply/restore, new interfaces, mixed values, failure rollback, drift, boot, lock, corrupt state, rollback failure')
+print('PASS: explicit IPv6 enable despite original all=1 or missing/corrupt backup; disable/enable readback, new interfaces, exact failure rollback, boot, lock and drift')
