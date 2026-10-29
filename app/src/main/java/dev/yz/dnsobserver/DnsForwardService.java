@@ -39,6 +39,9 @@ public final class DnsForwardService extends Service {
 
     private static volatile DnsForwardService instance;
     private volatile boolean starting;
+    public static void cancelPendingStart(){
+        DnsForwardService s=instance;if(s!=null)s.cancellationRequested=true;
+    }
     public static boolean isStarting(){DnsForwardService s=instance;return s!=null && s.starting;}
     @Override public void onCreate(){super.onCreate();instance=this;}
     public static boolean isServing(){
@@ -416,18 +419,20 @@ public final class DnsForwardService extends Service {
     private synchronized void stopNow() {
         cancellationRequested = true;
         boolean wasActive;
+        boolean ownsState=true;
         String recoveryError = null;
         synchronized (firewallLock) {
             wasActive = activated;
             running = false;
             activated = false;
             // Restore original DNS path BEFORE closing the sockets.
-            try { DnsRootRules.remove(this); }
+            try { if(session==null)DnsRootRules.remove(this);else ownsState=DnsRootRules.removeOwned(this,session); }
             catch (Exception e) { recoveryError = brief(e); }
         }
         close(udp4); close(udp6); close(tcp4); close(tcp6);
         if (workers != null) workers.shutdownNow();
         String previous = getSharedPreferences(PREFS, MODE_PRIVATE).getString("status", "");
+        if(!ownsState){stopForeground(STOP_FOREGROUND_REMOVE);stopSelf();return;}
         if (recoveryError != null) writeState(false, "警告：Root 规则可能未恢复：" + recoveryError);
         else if (wasActive || !previous.contains("失败")) writeState(false, "接管已关闭，DNS 恢复为系统路径");
         stopForeground(STOP_FOREGROUND_REMOVE);

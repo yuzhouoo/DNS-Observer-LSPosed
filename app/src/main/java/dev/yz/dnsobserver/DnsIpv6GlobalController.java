@@ -37,6 +37,8 @@ public final class DnsIpv6GlobalController {
     private static volatile java.lang.Process process;
     private static volatile boolean starting,ownsRules,promoted;
     private static String token;
+    private static volatile String checkFailure="";
+    public static String lastCheckFailure(){return checkFailure;}
     private static int rootPid;
     private static final LinkedBlockingQueue<String> signals=new LinkedBlockingQueue<>();
     private DnsIpv6GlobalController(){}
@@ -184,7 +186,7 @@ public final class DnsIpv6GlobalController {
                 socket.send(new DatagramPacket(request,request.length,address,53));
                 byte[] buf=new byte[4096];DatagramPacket result=new DatagramPacket(buf,buf.length);
                 socket.receive(result);
-                if(!address.equals(result.getAddress())||result.getPort()!=53)return false;
+                if(!address.equals(result.getAddress())||result.getPort()!=53)throw new java.io.IOException("UDP 回包源不匹配："+result.getAddress()+":"+result.getPort());
                 response=Arrays.copyOf(buf,result.getLength());
             }
         }else{
@@ -194,19 +196,27 @@ public final class DnsIpv6GlobalController {
                 DataOutputStream out=new DataOutputStream(socket.getOutputStream());
                 out.writeShort(request.length);out.write(request);out.flush();
                 DataInputStream in=new DataInputStream(socket.getInputStream());
-                int size=in.readUnsignedShort();if(size<12||size>4096)return false;
+                int size=in.readUnsignedShort();if(size<12||size>4096)throw new java.io.IOException("TCP DNS 长度错误："+size);
                 response=new byte[size];in.readFully(response);
             }
         }
         int rcode=response.length>3?response[3]&15:-1;
-        return DnsPacket.validReply(request,response)&&(rcode==0||rcode==3)&&!DnsPacket.truncated(response);
+        if(!DnsPacket.validReply(request,response))throw new java.io.IOException(protocol+" DNS 回包格式或事务 ID 不匹配");
+        if(rcode!=0&&rcode!=3)throw new java.io.IOException(protocol+" DNS 回包 rcode="+rcode);
+        if(DnsPacket.truncated(response))throw new java.io.IOException(protocol+" DNS 回包被截断");
+        return true;
     }
-    private static boolean selfTest(Context app){
+    private static boolean selfTest(Context app,java.util.function.BooleanSupplier allowed)throws Exception{
         boolean all=true;
         for(String dest:DOCS){
             for(String protocol:new String[]{"UDP","TCP"}){
                 boolean ok=false;
-                try{ok=probe(protocol,dest);}catch(Exception ex){log(app,"原目标回包测试异常："+ex.getClass().getSimpleName()+" "+ex.getMessage());}
+                for(int attempt=1;attempt<=2&&!ok;attempt++){
+                    ensureAllowed(allowed);
+                    try{ok=probe(protocol,dest);}
+                    catch(Exception ex){log(app,"自检 "+protocol+" "+dest+" 第"+attempt+"次："+ex.toString());}
+                    if(!ok&&attempt<2)Thread.sleep(120);
+                }
                 log(app,"自检 "+protocol+" "+dest+"："+(ok?"通过":"失败"));
                 all&=ok;
             }
@@ -239,13 +249,15 @@ public final class DnsIpv6GlobalController {
                 ensureAllowed(allowed);
                 installAttempted=true;
                 String installed=root(app,"install-probe",token,12);ownsRules=true;log(app,installed);
-                if(!selfTest(app))throw new IllegalStateException("原始 IPv6 目标/回包自检未全通过，禁止扩大匹配");
+                if(!selfTest(app,allowed))throw new IllegalStateException("原始 IPv6 目标/回包自检未全通过，禁止扩大匹配");
                 ensureAllowed(allowed);
                 log(app,root(app,"promote",token,12));promoted=true;
                 // One more check with broad selectors active; failures always revert.
                 if(!probe("UDP",DOCS[0])||!probe("TCP",DOCS[1]))
                     throw new IllegalStateException("扩大规则后的回包验证失败，立即恢复");
                 ensureAllowed(allowed);
+                log(app,root(app,"check",token,8));
+                checkFailure="";
                 final java.lang.Process monitor=started;
                 Thread guard=new Thread(()->{
                     try{monitor.waitFor();}catch(InterruptedException ex){Thread.currentThread().interrupt();}
@@ -298,9 +310,9 @@ public final class DnsIpv6GlobalController {
     }
     public static boolean active(Context ctx) {
         synchronized(LOCK) {
-            if(process==null || !process.isAlive() || !promoted)return false;
-            try { root(ctx,"check",token,8);return true; }
-            catch(Exception ex) { return false; }
+            if(process==null || !process.isAlive() || !promoted){checkFailure="Root 代理已退出或未完成启用";return false;}
+            try { root(ctx,"check",token,8);checkFailure="";return true; }
+            catch(Exception ex) {checkFailure=ex.toString();return false;}
         }
     }
     public static String status(Context ctx){

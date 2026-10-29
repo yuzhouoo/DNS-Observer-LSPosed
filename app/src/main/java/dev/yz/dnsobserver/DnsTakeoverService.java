@@ -56,6 +56,7 @@ public final class DnsTakeoverService extends Service {
     }
     public static void requestStop(Context ctx) {
         Context app=ctx.getApplicationContext();
+        DnsForwardService.cancelPendingStart();
         // Disable recovery BEFORE posting the stop action, even if the service is busy.
         app.getSharedPreferences(DnsForwardService.PREFS,MODE_PRIVATE).edit()
                 .putBoolean("takeover_enabled",false).commit();
@@ -77,7 +78,7 @@ public final class DnsTakeoverService extends Service {
     @Override public int onStartCommand(Intent intent,int flags,int startId){
         String action=intent==null?"":intent.getAction();
         if(ACTION_STOP.equals(action)){
-            stopped=true;uiPhase="stopping";
+            stopped=true;uiPhase="stopping";DnsForwardService.cancelPendingStart();
             prefs().edit().putBoolean("takeover_enabled",false).commit();
             io.execute(this::stopAll);
             return START_NOT_STICKY;
@@ -115,6 +116,7 @@ public final class DnsTakeoverService extends Service {
         ipv6EverActive=false;ipv6RepairBlocked=false;
         if(!expect4 && !expect6){status("没有勾选 IPv4/IPv6，未启动");uiPhase="idle";stopSelf();return;}
         if(stopped || !p.getBoolean("takeover_enabled",false)){stopAll();return;}
+        boolean active6Now=false;
         try {
             // Never depend on Android's system resolver for hostname bootstrap.
             DnsBootstrap.parseLiteral(p.getString("bootstrap", "").trim());
@@ -129,8 +131,10 @@ public final class DnsTakeoverService extends Service {
                 String result=DnsIpv6GlobalController.start(this,()->!stopped&&prefs().getBoolean("takeover_enabled",false));
                 if(stopped||!prefs().getBoolean("takeover_enabled",false))return;
                 status("IPv6："+result);
-                if(result.startsWith("IPv6 DNS53 已启用") && DnsIpv6GlobalController.active(this)){
+                if(result.startsWith("IPv6 DNS53 已启用")){
                     ipv6EverActive=true;
+                    active6Now=DnsIpv6GlobalController.active(this);
+                    if(!active6Now)status("IPv6 启动校验已通过，但当前状态发生变化："+DnsIpv6GlobalController.lastCheckFailure());
                 }else{
                     // A failed initial install is NOT a system takeover and must not
                     // trigger an endless 15-second reinstall/bind-conflict loop.
@@ -143,7 +147,7 @@ public final class DnsTakeoverService extends Service {
             if(stopped||!prefs().getBoolean("takeover_enabled",false))return;
             status("接管启动检查：IPv4="+(!expect4?"未选择":DnsForwardService.isStarting()?"启动中":
                 DnsForwardService.isServing()&&DnsRootRules.active(this)?"已启用":"未就绪，请查看服务状态")+
-                "；IPv6="+(!expect6?"未选择":ipv6EverActive?"已启用":"启动失败，已暂停自动重试"));
+                "；IPv6="+(!expect6?"未选择":ipv6EverActive?(active6Now?"已启用":"启动曾通过，当前状态异常") :"启动失败，已暂停自动重试"));
         }catch(Exception ex){status("启动失败："+ex.getClass().getSimpleName()+" "+ex.getMessage());}
         if(!stopped)uiPhase="monitoring";
         Thread observer=new Thread(this::monitor,"DNS-takeover-observer");
@@ -180,7 +184,7 @@ public final class DnsTakeoverService extends Service {
             if(expect6 && ipv6EverActive && !ipv6RepairBlocked){
                 boolean active=DnsIpv6GlobalController.active(this);
                 if(!active){
-                    if(!fault6){status("DETECT: IPv6 曾正常运行，现检测到规则缺失或 Root 代理退出");fault6=true;}
+                    if(!fault6){status("DETECT: IPv6 曾正常运行，现检测到规则缺失或 Root 代理退出："+DnsIpv6GlobalController.lastCheckFailure());fault6=true;}
                     if(heal){
                         // One attempt per fault episode. Failed repair is latched,
                         // never retry indefinitely while a port or route is occupied.
@@ -216,16 +220,17 @@ public final class DnsTakeoverService extends Service {
         catch(Exception ex){b.append(" IPv6 清理失败：").append(ex.toString());}
         try{DnsIpv6PilotController.stop(this);DnsIpv6Experiment.recover(this);b.append(" 旧实验规则已检查；");}
         catch(Exception ex){b.append(" 旧实验恢复失败：").append(ex.toString());}
-        // IPv4 stop runs asynchronously: wait for its firewallLock cleanup before final report.
-        for(int retry=0;retry<5 && DnsRootRules.active(this);retry++) {
-            try{Thread.sleep(300);}catch(InterruptedException ex){Thread.currentThread().interrupt();break;}
-        }
-        if(DnsRootRules.active(this)) {
-            try{DnsRootRules.remove(this);}catch(Exception ex){b.append(" IPv4 二次清理失败：").append(ex.toString());}
-        }
+        // A partially removed chain is not "active"; always verify complete absence.
         boolean clean4=false;
-        try{clean4=DnsRootRules.clean(this);}
-        catch(Exception ex){b.append(" IPv4 关闭校验未确认：").append(ex.toString());}
+        for(int retry=0;retry<3&&!clean4;retry++) {
+            try{
+                DnsRootRules.remove(this);
+                clean4=DnsRootRules.clean(this);
+            }catch(Exception ex){
+                if(retry==2)b.append(" IPv4 关闭校验未确认：").append(ex.toString());
+                else try{Thread.sleep(200);}catch(InterruptedException interrupted){Thread.currentThread().interrupt();break;}
+            }
+        }
         status(b.toString()+" IPv4="+(clean4?"VERIFY_CLEAN":"VERIFY_FAILED")+"，IPv6="+(clean6?"VERIFY_CLEAN":"VERIFY_FAILED/请核对恢复日志"));
         monitoring=false;uiPhase="idle";
         stopForeground(STOP_FOREGROUND_REMOVE);

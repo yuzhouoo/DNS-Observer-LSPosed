@@ -23,8 +23,8 @@ assert 'new ArrayBlockingQueue<>(32)' in daemon and 'TTL_SECONDS=145' not in dae
 assert 'consecutiveFailures%6==0' in daemon
 assert 'if(DnsIpv6PilotController.isRunning())' in control
 assert 'DnsIpv6GlobalController.isRunning()' in (base/'DnsIpv6PilotController.java').read_text()
-assert 'selfTest(app)' in control and 'root(app,"promote",token,12)' in control
-assert control.index('if(!selfTest(app))') < control.index('root(app,"promote",token,12)')
+assert 'selfTest(app,allowed)' in control and 'root(app,"promote",token,12)' in control
+assert control.index('if(!selfTest(app,allowed))') < control.index('root(app,"promote",token,12)')
 assert control.index('preflight(app,allowed)') < control.index('root(app,"install-probe"')
 assert 'root(ctx,"recover","cleanup",14)' in control
 assert 'installAttempted' in control and 'PRECHECK_FAILED' in control and 'rollbackConfirmed' in control

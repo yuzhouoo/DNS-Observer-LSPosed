@@ -39,6 +39,7 @@ jobs:
           sh -n app/src/main/assets/dns-ipv6-global.sh
           sh -n app/src/main/assets/system-ipv6.sh
           sh -n app/src/main/assets/dns-ui-status.sh
+          python3 tests/test_ipv4_cleanup.py
           python3 tests/test_ipv6_route_failure.py
           python3 tests/test_ui_status_probe.py
           python3 tests/test_system_ipv6.py
@@ -108,11 +109,11 @@ jobs:
           print('Verified: Modern API 102 resources included; no legacy entry')
           PY
       - name: Package complete source snapshot
-        run: git archive --format=zip --output=DNSObserver-v0.6.4-beta4-source.zip HEAD
+        run: git archive --format=zip --output=DNSObserver-v0.6.4-beta5-source.zip HEAD
       - uses: actions/upload-artifact@v4
         with:
-          name: DNSObserver-v0.6.4-beta4-source
-          path: DNSObserver-v0.6.4-beta4-source.zip
+          name: DNSObserver-v0.6.4-beta5-source
+          path: DNSObserver-v0.6.4-beta5-source.zip
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:

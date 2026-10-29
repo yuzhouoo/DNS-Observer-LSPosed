@@ -42,7 +42,7 @@ p=Path(os.environ['MODEL']);s=json.loads(p.read_text());a=sys.argv[1:]
 if 'addr' in a:print('lo: inet6 ::1/128');sys.exit(0)
 if 'route' in a:
  if 'show' in a:
-  if s['route']:print('local ::/0 dev lo table 19754')
+  if s['route']:print(os.environ.get('ROUTE_TEXT','local ::/0 dev lo table 19754'))
  elif 'add' in a:
   lo=Path(os.environ['CONF'])/'lo/disable_ipv6'
   if lo.read_text().strip()=='1' or os.environ.get('DENY_ROUTE')=='1':
@@ -74,6 +74,17 @@ p.write_text(json.dumps(s))
     r=call('check');assert r.returncode==0,(r.stdout,r.stderr)
     r=call('recover');assert r.returncode==0,(r.stdout,r.stderr)
     assert snap()==empty and lo.read_text().strip()=='1' and not lease.exists()
+    # iproute2 prints ::/0 as default; both renderings must check and clean identically.
+    for text in ['local default dev lo metric 1024 pref medium',
+                 'local ::/0 proto static dev lo table 19754 metric 1024']:
+        assert call('install-probe',ROUTE_TEXT=text).returncode==0
+        assert call('promote',ROUTE_TEXT=text).returncode==0
+        r=call('check',ROUTE_TEXT=text);assert r.returncode==0,(r.stdout,r.stderr)
+        # Wrong interface/destination must never pass merely because the table exists.
+        assert call('check',ROUTE_TEXT='local default dev wlan0').returncode!=0
+        assert call('check',ROUTE_TEXT='local 2001:db8::1/128 dev lo').returncode!=0
+        assert call('recover',ROUTE_TEXT=text).returncode==0
+        assert snap()==empty
     # Genuine netlink permission failure remains an error with a complete rollback and context.
     r=call('install-probe',DENY_ROUTE='1');assert r.returncode==7,(r.stdout,r.stderr)
     assert 'ROUTE_INSTALL_FAILED' in r.stderr and 'disable_ipv6.lo=0' in r.stderr

@@ -31,7 +31,7 @@ public final class DnsRootRules {
         String file = path(script(ctx));
         int uid = Process.myUid();
         int pid = Process.myPid();
-        if (!mode.matches("install|remove|watch|status|verify-clean") || !token.matches("[a-zA-Z0-9_-]{1,64}")) {
+        if (!mode.matches("install|remove|remove-owned|watch|status|verify-clean") || !token.matches("[a-zA-Z0-9_-]{1,64}")) {
             throw new IllegalArgumentException("invalid command arguments");
         }
         String cmd = "/system/bin/sh " + file + " " + mode + " " + uid + " "
@@ -62,7 +62,7 @@ public final class DnsRootRules {
         return new String(output.toByteArray(), StandardCharsets.UTF_8).trim();
     }
 
-    public static void install(Context ctx, boolean ipv6, String token) throws Exception {
+    public static synchronized void install(Context ctx, boolean ipv6, String token) throws Exception {
         try {
             invoke(ctx, "install", ipv6, token, 15);
             invoke(ctx, "watch", ipv6, token, 8);
@@ -72,8 +72,12 @@ public final class DnsRootRules {
         }
     }
 
-    public static void remove(Context ctx) throws Exception {
-        invoke(ctx, "remove", false, "cleanup", 12);
+    public static synchronized void remove(Context ctx) throws Exception {
+        invoke(ctx, "remove", false, "cleanup", 24);
+    }
+
+    public static synchronized boolean removeOwned(Context ctx,String session) throws Exception {
+        return !invoke(ctx,"remove-owned",false,session,24).contains("SKIP_NEWER_SESSION");
     }
 
     /** An IPv6 NAT table is required for the existing REDIRECT implementation. */
@@ -88,7 +92,7 @@ public final class DnsRootRules {
         } catch (Exception e) { return false; }
     }
 
-    public static boolean clean(Context ctx) throws Exception {
+    public static synchronized boolean clean(Context ctx) throws Exception {
         return invoke(ctx,"verify-clean",false,"cleanup",6).contains("VERIFY_CLEAN");
     }
 
