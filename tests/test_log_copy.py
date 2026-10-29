@@ -11,5 +11,5 @@ assert 'clearLog(Context ctx)' in c and '.remove("ipv6_pilot_log").commit()' in 
 assert 'ipv6ExperimentResult' not in s
 assert '旧版 IPv6 NAT 重定向' not in s
 assert 'historyScroll.setVisibility(View.GONE)' in s
-assert 'v0.6.3-beta5' in s and 'v0.6.3-beta5' in m
+assert 'BuildConfig.VERSION_NAME' in s and 'BuildConfig.VERSION_NAME' in m
 print('PASS: compact selectable pilot logs, clear and old UI removed')

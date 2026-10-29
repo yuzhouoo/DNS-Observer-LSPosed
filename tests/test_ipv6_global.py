@@ -31,5 +31,5 @@ assert 'installAttempted' in control and 'PRECHECK_FAILED' in control
 assert 'DnsIpv6GlobalController.stop' in (base/'DnsTakeoverService.java').read_text() and 'DnsIpv6GlobalController.start' in (base/'DnsTakeoverService.java').read_text()
 assert '清空 IPv6 日志' in ui and '复制 IPv6 全部日志' in ui
 assert 'logArea(root,ipv6GlobalLog,155)' in ui
-assert 'v0.6.3-beta5' in ui
+assert 'BuildConfig.VERSION_NAME' in ui
 print('PASS: global IPv6 opt-in gated, dynamic original destination, owner exclusion, independent watchdog, recovery')

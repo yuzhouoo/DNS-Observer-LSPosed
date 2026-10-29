@@ -38,7 +38,9 @@ public final class DnsControlActivity extends Activity {
     private volatile boolean measuring;
     private TextView status, ipv6PilotLog, ipv6GlobalLog, takeoverEvents;
     private CheckBox takeIpv4, takeIpv6;
-    private Switch repairSwitch, bootSwitch;
+    private Switch repairSwitch, bootSwitch, systemIpv6;
+    private TextView ipv6Result;
+    private boolean ipv6Busy;
     private ScrollView historyScroll;
     private Button speedHistoryToggle;
     private boolean historyExpanded;
@@ -121,21 +123,40 @@ public final class DnsControlActivity extends Activity {
     }
 
 
-    private void toggleIpv6FromUi(Switch control,TextView result,boolean disable) {
-        control.setEnabled(false);result.setText("正在通过 Root 应用并验证…");
+    private void showIpv6State(String value) {
+        systemIpv6.setOnCheckedChangeListener(null);
+        systemIpv6.setChecked(value.startsWith("IPV6_DISABLED\n") || value.equals("IPV6_DISABLED"));
+        systemIpv6.setOnCheckedChangeListener((b,on)->toggleIpv6FromUi(systemIpv6,ipv6Result,on));
+    }
+    private void refreshIpv6State() {
+        if(ipv6Busy || systemIpv6==null)return;
+        ipv6Busy=true;systemIpv6.setEnabled(false);
         new Thread(()->{
             String message;boolean success=false;
-            try {message=Ipv6SystemToggle.set(disable);success=true;}
-            catch(Exception error){message=error.toString();}
-            final boolean ok=success;final String output=message;
+            try {message=Ipv6SystemToggle.status(getApplicationContext());success=true;}
+            catch(Exception error){message="内核状态未知："+error;}
+            final String output=message;final boolean ok=success;
             ui.post(()->{
-                if(ok)prefs.edit().putBoolean("system_ipv6_disabled",disable).commit();
-                else {
-                    control.setOnCheckedChangeListener(null);
-                    control.setChecked(prefs.getBoolean("system_ipv6_disabled",false));
-                    control.setOnCheckedChangeListener((b,value)->toggleIpv6FromUi(control,result,value));
-                }
-                result.setText(output);control.setEnabled(true);
+                if(ok)showIpv6State(output);
+                ipv6Result.setText(output);systemIpv6.setEnabled(true);ipv6Busy=false;
+            });
+        },"IPv6-system-status").start();
+    }
+    private void toggleIpv6FromUi(Switch control,TextView result,boolean disable) {
+        if(ipv6Busy)return;
+        ipv6Busy=true;control.setEnabled(false);result.setText("正在通过 Root 应用并验证…");
+        new Thread(()->{
+            String message;
+            try {message=Ipv6SystemToggle.set(getApplicationContext(),disable);}
+            catch(Exception error){message=error.toString();}
+            String actual=null;
+            try {actual=Ipv6SystemToggle.status(getApplicationContext());}
+            catch(Exception error){message+="\n内核状态未知："+error;}
+            final String output=message;final String verified=actual;
+            ui.post(()->{
+                if(verified!=null)showIpv6State(verified);
+                result.setText(output+(verified==null?"":"\n当前内核状态：\n"+verified));
+                control.setEnabled(true);ipv6Busy=false;
             });
         },"IPv6-system-toggle").start();
     }
@@ -180,21 +201,22 @@ public final class DnsControlActivity extends Activity {
         LinearLayout root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(16),dp(16),dp(16),dp(26));scroll.addView(root);
         setContentView(scroll);
-        root.addView(label("DNS Observer · v0.6.4-beta1",23,FG));
+        root.addView(label("DNS Observer · v"+BuildConfig.VERSION_NAME,23,FG));
         root.addView(label("IPv4 NAT / IPv6 TPROXY 独立选择 · 启用后不定时关闭 · Bootstrap-only",12,SECOND));
         status=selectable(label("正在检查接管状态…",14,FG));
         logArea(root,status,96);
         button("复制当前接管状态",root).setOnClickListener(v->copyVisibleText(status,"接管状态"));
 
         root.addView(label("系统网络 · IPv6 总开关（Root）",18,FG));
-        root.addView(label("立即调整现有网络接口；网络切换后可能需要重新应用。IPv6-only 移动网络可能断网。",12,SECOND));
-        Switch systemIpv6=new Switch(this);
+        root.addView(label("立即应用并校验全部接口及新接口默认值；关闭时恢复本次开机的原值。IPv6-only 网络可能断网；恢复地址需等待网络重新获取。",12,SECOND));
+        systemIpv6=new Switch(this);
         systemIpv6.setText("禁用 IPv6（仅 IPv4）");systemIpv6.setTextColor(FG);
-        systemIpv6.setChecked(prefs.getBoolean("system_ipv6_disabled",false));
+        systemIpv6.setEnabled(false);
         root.addView(systemIpv6);
-        TextView ipv6Result=selectable(label("显示上次执行状态，非实时内核状态",12,SECOND));
+        ipv6Result=selectable(label("正在读取内核状态…",12,SECOND));
         root.addView(ipv6Result);
         systemIpv6.setOnCheckedChangeListener((b,disable)->toggleIpv6FromUi(systemIpv6,ipv6Result,disable));
+        button("刷新 IPv6 内核状态",root).setOnClickListener(v->refreshIpv6State());
         host=field(root,"主 DNS 域名（不带协议、端口）",prefs.getString("host",""));
         port=field(root,"主 DNS 端口",prefs.getString("port","31017"));
         port.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
@@ -483,6 +505,6 @@ public final class DnsControlActivity extends Activity {
         refreshGlobalPreview();
         ui.postDelayed(this,3500);
     }};
-    @Override protected void onResume(){super.onResume();visible=true;ui.removeCallbacks(refresh);ui.postDelayed(refresh,1200);}
+    @Override protected void onResume(){super.onResume();visible=true;refreshIpv6State();ui.removeCallbacks(refresh);ui.postDelayed(refresh,1200);}
     @Override protected void onPause(){visible=false;ui.removeCallbacks(refresh);super.onPause();}
 }
