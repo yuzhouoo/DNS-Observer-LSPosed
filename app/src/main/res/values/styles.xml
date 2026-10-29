@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.DnsObserver" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:colorAccent">#53E0D0</item>
+        <item name="android:windowBackground">#080F1B</item>
+        <item name="android:colorBackground">#101E30</item>
+        <item name="android:colorPrimary">#101E30</item>
+        <item name="android:colorPrimaryDark">#080F1B</item>
+        <item name="android:colorControlNormal">#829CB7</item>
+        <item name="android:colorControlActivated">#53E0D0</item>
+        <item name="android:colorButtonNormal">#19304A</item>
+        <item name="android:textColorPrimary">#EAF3FF</item>
+        <item name="android:textColorSecondary">#A4B7CC</item>
+        <item name="android:textColorHint">#829CB7</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:statusBarColor">#080F1B</item>
+        <item name="android:navigationBarColor">#080F1B</item>
+        <item name="android:windowActionModeOverlay">true</item>
+    </style>
+</resources>

@@ -29,8 +29,8 @@ import java.net.InetSocketAddress;
 
 /** Manual controls only: opening the screen never modifies DNS or Root rules. */
 public final class DnsControlActivity extends Activity {
-    private static final int BG = Color.rgb(11,18,32), FG = Color.rgb(235,244,253);
-    private static final int SECOND = Color.rgb(150,180,196);
+    private static final int BG=TechUi.BG,FG=TechUi.TEXT;
+    private static final int SECOND=TechUi.MUTED;
     private final Handler ui = new Handler(Looper.getMainLooper());
     private EditText host, port, bootstrap, subHost, subPort, secondaryHost, secondaryPort;
     private TextView history;
@@ -167,8 +167,12 @@ public final class DnsControlActivity extends Activity {
     }
     private void paint(Button button,String title,boolean enabled,boolean danger) {
         if(button==null)return;
-        button.setText(title);button.setEnabled(enabled);button.setAlpha(enabled?1f:0.45f);
-        button.setBackground(surface(danger?Color.rgb(111,43,53):Color.rgb(34,57,80),10));
+        button.setText(title);button.setEnabled(enabled);button.setAlpha(1f);
+        TechUi.button(button,danger?TechUi.DANGER:button==startButton?TechUi.PRIMARY:TechUi.SECONDARY);
+    }
+    private int stateColor(DnsFeatureState value){
+        return value==DnsFeatureState.ON?TechUi.GREEN:value==DnsFeatureState.ERROR?TechUi.RED:
+            value==DnsFeatureState.OFF?TechUi.MUTED:TechUi.AMBER;
     }
     private void renderFeatureStates() {
         if(featureOverview==null)return;
@@ -194,12 +198,17 @@ public final class DnsControlActivity extends Activity {
             "mixed".equals(system)?"部分接口禁用 · 非全局禁用":"待确认 · 请刷新状态";
         if(ipv6Result!=null&&!ipv6Busy)ipv6Result.setText("当前状态："+systemLabel+
             (ipv6OperationResult.isEmpty()?"":"\n上次操作结果：\n"+ipv6OperationResult));
-        featureOverview.setText("DNS 记录："+records+"\nIPv4 DNS 接管："+v4.label+
-            "\nIPv6 DNS 接管："+v6.label+"\n系统 IPv6："+systemLabel+
-            "\n自动重新接管："+(repairSwitch!=null&&repairSwitch.isChecked()?"已开启":"已关闭")+
-            "\nBox 自动适配："+(prefs.getBoolean("takeover_box_watch",true)?(requested?prefs.getString("box_watch_status","等待首次检测"):"已开启；接管关闭时不监测"):"已关闭")+
-            "\n开机自动接管："+(bootSwitch!=null&&bootSwitch.isChecked()?(requested?"已开启，等待下次开机":"已开启；手动关闭后不自动启动"):"已关闭"));
-        featureOverview.setTextColor(v4==DnsFeatureState.ERROR||v6==DnsFeatureState.ERROR?Color.rgb(255,170,112):FG);
+        TechUi.overview(featureOverview,
+            new String[]{"DNS 记录","IPv4 接管","IPv6 接管","系统 IPv6","自动重新接管","Box 自动适配","开机接管"},
+            new String[]{records,v4.label,v6.label,systemLabel,
+                repairSwitch!=null&&repairSwitch.isChecked()?"已开启":"已关闭",
+                prefs.getBoolean("takeover_box_watch",true)?(requested?prefs.getString("box_watch_status","等待首次检测"):"已开启 · 接管关闭时不监测"):"已关闭",
+                bootSwitch!=null&&bootSwitch.isChecked()?(requested?"已开启":"已开启 · 手动关闭后不自动启动"):"已关闭"},
+            new int[]{enabled?(live?TechUi.GREEN:TechUi.AMBER):TechUi.MUTED,stateColor(v4),stateColor(v6),
+                "enabled".equals(system)?TechUi.CYAN:TechUi.AMBER,
+                repairSwitch!=null&&repairSwitch.isChecked()?TechUi.CYAN:TechUi.MUTED,
+                prefs.getBoolean("takeover_box_watch",true)?TechUi.CYAN:TechUi.MUTED,
+                bootSwitch!=null&&bootSwitch.isChecked()?TechUi.CYAN:TechUi.MUTED});
         String stamp=checkedAt==0?"尚未完成本次状态校验":
             "最近校验："+new java.text.SimpleDateFormat("HH:mm:ss",java.util.Locale.getDefault()).format(
                 new java.util.Date(System.currentTimeMillis()-(android.os.SystemClock.elapsedRealtime()-checkedAt)));
@@ -209,7 +218,7 @@ public final class DnsControlActivity extends Activity {
         boolean session=requested || !"idle".equals(current) || (fresh&&(snapshot.active4||snapshot.active6));
         boolean lockConfig=session||lifecycleBusy||ipv6Busy||measuring;
         for(EditText field:new EditText[]{host,port,bootstrap,subHost,subPort,secondaryHost,secondaryPort})
-            if(field!=null){field.setEnabled(!lockConfig);field.setAlpha(lockConfig?0.55f:1f);}
+            if(field!=null){field.setEnabled(!lockConfig);field.setAlpha(1f);}
         if(takeIpv4!=null){takeIpv4.setEnabled(!lockConfig);takeIpv6.setEnabled(!lockConfig);}
         String selected=takeIpv4==null?"":(takeIpv4.isChecked()?"IPv4 ":"")+(takeIpv6.isChecked()?"IPv6":"");
         if(selectionHint!=null)selectionHint.setText(session?"接管会话运行中：请先关闭接管，再修改 DNS 和协议配置。":
@@ -277,6 +286,7 @@ public final class DnsControlActivity extends Activity {
     private TextView label(String text, int size, int color) {
         TextView l = new TextView(this);
         l.setText(text); l.setTextSize(size); l.setTextColor(color); l.setPadding(0,dp(7),0,dp(5));
+        l.setLineSpacing(dp(3),1f);if(size>=18)TechUi.heading(l);
         return l;
     }
     private EditText field(LinearLayout root, String title, String value) {
@@ -284,16 +294,16 @@ public final class DnsControlActivity extends Activity {
         EditText e = new EditText(this);
         e.setSingleLine(true);e.setTextSize(16);e.setTextColor(FG);e.setHintTextColor(SECOND);
         e.setText(value);e.setPadding(dp(8),dp(4),dp(8),dp(6));
-        root.addView(e,new LinearLayout.LayoutParams(-1,dp(52)));
+        TechUi.input(e);root.addView(e,new LinearLayout.LayoutParams(-1,-2));TechUi.spaced(e);
         return e;
     }
     private GradientDrawable surface(int color,int radius) {
-        GradientDrawable d=new GradientDrawable();d.setColor(color);d.setCornerRadius(dp(radius));return d;
+        return TechUi.panel(this,color,radius);
     }
     private ScrollView logArea(LinearLayout parent,TextView text,int height) {
         ScrollView box=new ScrollView(this);
         box.setFillViewport(false);box.setNestedScrollingEnabled(true);
-        box.setBackground(surface(Color.rgb(20,32,51),12));
+        box.setBackground(surface(TechUi.PANEL,12));
         text.setPadding(dp(12),dp(10),dp(12),dp(10));
         box.addView(text,new ScrollView.LayoutParams(-1,-2));
         LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,dp(height));
@@ -303,20 +313,25 @@ public final class DnsControlActivity extends Activity {
     private Button button(String title, LinearLayout root) {
         Button b=new Button(this);
         b.setText(title);b.setAllCaps(false);b.setTextSize(14);b.setTextColor(FG);
-        b.setBackground(surface(Color.rgb(34,57,80),10));b.setMinHeight(dp(48));b.setPadding(dp(10),dp(8),dp(10),dp(8));
+
         LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);
         lp.bottomMargin=dp(7);root.addView(b,lp);
-        return b;
+        TechUi.button(b,title.startsWith("清空")?TechUi.DANGER:TechUi.SECONDARY);return b;
     }
     private void build() {
         ScrollView scroll=new ScrollView(this);scroll.setFillViewport(true);scroll.setBackgroundColor(BG);
         LinearLayout root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(16),dp(16),dp(16),dp(26));scroll.addView(root);
-        setContentView(scroll);
-        root.addView(label("DNS Observer · v"+BuildConfig.VERSION_NAME,23,FG));
+        scroll.setClipToPadding(true);scroll.setBackground(TechUi.backdrop());
+        setContentView(scroll);TechUi.safeScreen(this,scroll);
+        button("‹  返回 DNS 观察",root).setOnClickListener(v->finish());
+        root.addView(label("DNS 控制中心",26,FG));
+        root.addView(label("DNS Observer · v"+BuildConfig.VERSION_NAME,12,SECOND));
         root.addView(label("IPv4 NAT / IPv6 TPROXY 独立选择 · 启用后不定时关闭 · Bootstrap-only",12,SECOND));
         featureOverview=selectable(label("正在核对各功能状态…",15,FG));
-        logArea(root,featureOverview,210);
+        featureOverview.setPadding(dp(16),dp(16),dp(16),dp(16));
+        featureOverview.setBackground(surface(TechUi.PANEL,16));
+        root.addView(featureOverview,new LinearLayout.LayoutParams(-1,-2));
         featureStamp=label("尚未完成状态校验",12,SECOND);root.addView(featureStamp);
         featureRefresh=button("刷新所有功能状态",root);featureRefresh.setOnClickListener(v->refreshFeatureStates());
         root.addView(label("最近操作与接管事件",14,SECOND));
@@ -329,13 +344,14 @@ public final class DnsControlActivity extends Activity {
         systemIpv6=new Switch(this);
         systemIpv6.setText("禁用 IPv6（仅 IPv4）");systemIpv6.setTextColor(FG);
         systemIpv6.setEnabled(false);
-        root.addView(systemIpv6);
+        TechUi.toggle(systemIpv6);root.addView(systemIpv6);TechUi.spaced(systemIpv6);
         ipv6Result=selectable(label("正在读取内核状态…",12,SECOND));
         logArea(root,ipv6Result,96);
         systemIpv6.setOnCheckedChangeListener((b,disable)->toggleIpv6FromUi(systemIpv6,ipv6Result,disable));
         systemEnableButton=button("启用系统 IPv6（全部接口）",root);
         systemEnableButton.setOnClickListener(v->toggleIpv6FromUi(systemIpv6,ipv6Result,false));
         ipv6Refresh=button("刷新 IPv6 内核状态",root);ipv6Refresh.setOnClickListener(v->refreshIpv6State());
+        root.addView(label("上游 DNS 配置",18,FG));
         host=field(root,"主 DNS 域名（不带协议、端口）",prefs.getString("host",""));
         port=field(root,"主 DNS 端口",prefs.getString("port","31017"));
         port.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
@@ -355,23 +371,25 @@ public final class DnsControlActivity extends Activity {
         takeIpv6.setChecked(prefs.getBoolean("takeover_ipv6",false));
         takeIpv4.setOnCheckedChangeListener((b,on)->renderFeatureStates());
         takeIpv6.setOnCheckedChangeListener((b,on)->renderFeatureStates());
-        types.addView(takeIpv4,new LinearLayout.LayoutParams(0,dp(48),1));
-        types.addView(takeIpv6,new LinearLayout.LayoutParams(0,dp(48),1));root.addView(types);
+        TechUi.toggle(takeIpv4);TechUi.toggle(takeIpv6);
+        types.addView(takeIpv4,new LinearLayout.LayoutParams(0,-2,1));
+        LinearLayout.LayoutParams typeLp=new LinearLayout.LayoutParams(0,-2,1);typeLp.leftMargin=dp(8);
+        types.addView(takeIpv6,typeLp);root.addView(types);TechUi.spaced(types);
         repairSwitch=new Switch(this);repairSwitch.setText("被系统覆盖后自动重新接管");
         repairSwitch.setTextColor(FG);repairSwitch.setChecked(prefs.getBoolean("takeover_auto_repair",false));
-        root.addView(repairSwitch);
+        TechUi.toggle(repairSwitch);root.addView(repairSwitch);TechUi.spaced(repairSwitch);
         repairSwitch.setOnCheckedChangeListener((b,on)->
             {prefs.edit().putBoolean("takeover_auto_repair",on).apply();renderFeatureStates();});
         boxWatchSwitch=new Switch(this);boxWatchSwitch.setText("自动适配 Box 启动 / 重启 / 停止");
         boxWatchSwitch.setTextColor(FG);boxWatchSwitch.setChecked(prefs.getBoolean("takeover_box_watch",true));
-        root.addView(boxWatchSwitch);
+        TechUi.toggle(boxWatchSwitch);root.addView(boxWatchSwitch);TechUi.spaced(boxWatchSwitch);
         boxWatchSwitch.setOnCheckedChangeListener((b,on)->{
             prefs.edit().putBoolean("takeover_box_watch",on).apply();renderFeatureStates();
         });
         root.addView(label("仅在 DNS 接管会话中约每 3 秒检测；等待 Box 稳定后恢复已成功开启的协议。首次失败不反复重试，手动关闭后不自动开启。",12,SECOND));
         bootSwitch=new Switch(this);bootSwitch.setText("开机自动启动（仅上次保持接管开启时）");
         bootSwitch.setTextColor(FG);bootSwitch.setChecked(prefs.getBoolean("takeover_boot",false));
-        root.addView(bootSwitch);
+        TechUi.toggle(bootSwitch);root.addView(bootSwitch);TechUi.spaced(bootSwitch);
         bootSwitch.setOnCheckedChangeListener((b,on)->
             {prefs.edit().putBoolean("takeover_boot",on).apply();renderFeatureStates();});
         root.addView(label("无定时恢复：手动关闭会强制清理 IPv4 和 IPv6（忽略勾选）。异常进程退出仍执行安全清理；覆盖自动重新接管仅在开关打开时执行。",12,SECOND));
@@ -408,7 +426,7 @@ public final class DnsControlActivity extends Activity {
         speedButton=button("开始主 / 从 / 备测速",root);speedButton.setOnClickListener(v->testServer());
         speedResults=new LinearLayout(this);speedResults.setOrientation(LinearLayout.VERTICAL);
         ScrollView speedScroll=new ScrollView(this);speedScroll.setNestedScrollingEnabled(true);
-        speedScroll.setBackground(surface(Color.rgb(20,32,51),12));
+        speedScroll.setBackground(surface(TechUi.PANEL,12));
         speedScroll.addView(speedResults);root.addView(speedScroll,new LinearLayout.LayoutParams(-1,dp(190)));
         speedResults.addView(label("未开始测速；点击上方按钮检测各 IP。",13,SECOND));
         root.addView(label("IPv6 TPROXY Root 服务日志",17,FG));
@@ -573,7 +591,7 @@ public final class DnsControlActivity extends Activity {
     private TextView speedCell(String title,String value) {
         TextView cell=label(title+"\n"+value,11,FG);
         cell.setPadding(dp(5),dp(9),dp(4),dp(9));
-        cell.setBackgroundColor(Color.rgb(24,39,58));
+        cell.setBackground(surface(TechUi.PANEL,10));
         return cell;
     }
     private void renderSpeeds(String[] domains,int[] ports,UpstreamMonitor.Result[] values) {
@@ -583,7 +601,7 @@ public final class DnsControlActivity extends Activity {
             card.setPadding(dp(10),dp(10),dp(10),dp(12));
             LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);
             lp.topMargin=dp(10);speedResults.addView(card,lp);
-            card.setBackgroundColor(Color.rgb(20,33,50));
+            card.setBackground(surface(TechUi.PANEL,14));
             final String title=DnsFailover.NAMES[role]+" DNS";
             if(domains[role].isEmpty()){
                 card.addView(label(title+" · 未配置",16,SECOND));continue;
@@ -606,7 +624,7 @@ public final class DnsControlActivity extends Activity {
             if(!r.error.isEmpty())card.addView(label("检测说明："+r.error,12,SECOND));
             if(!details.isEmpty()){
                 TextView expanded=label("查看每个 IP 的 Ping / UDP DNS / TCP DNS 诊断（"+r.samples.size()+" 项）  ▾",12,SECOND);
-                card.addView(expanded);
+                TechUi.disclosure(expanded);card.addView(expanded);
                 TextView detailView=selectable(label(details,12,FG));
                 detailView.setVisibility(View.GONE);
                 ScrollView detailScroll=logArea(card,detailView,175);

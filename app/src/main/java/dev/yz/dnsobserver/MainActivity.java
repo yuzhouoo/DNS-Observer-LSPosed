@@ -19,13 +19,10 @@ import android.text.TextWatcher;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.AdapterView;
-import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
-import android.widget.Spinner;
 import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -40,13 +37,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public final class MainActivity extends Activity {
-    private static final int BACKGROUND = Color.rgb(11, 18, 32);
-    private static final int PANEL = Color.rgb(22, 32, 51);
-    private static final int TEXT = Color.rgb(239, 246, 255);
-    private static final int MUTED = Color.rgb(151, 173, 195);
-    private static final int AQUA = Color.rgb(91, 218, 209);
-    private static final int GREEN = Color.rgb(116, 223, 174);
-    private static final int RED = Color.rgb(255, 133, 139);
+    private static final int BACKGROUND=TechUi.BG,PANEL=TechUi.PANEL,TEXT=TechUi.TEXT,
+        MUTED=TechUi.MUTED,AQUA=TechUi.CYAN,GREEN=TechUi.GREEN,RED=TechUi.RED;
     private static final int REQ_EXPORT = 41;
 
     private final Handler ui = new Handler(Looper.getMainLooper());
@@ -58,7 +50,7 @@ public final class MainActivity extends Activity {
     private TextView state, stats, note;
     private LinearLayout results;
     private EditText search;
-    private Spinner statusSpinner;
+    private final Button[] filterButtons=new Button[3];
     private Switch recordingSwitch;
     private Button dnsControl,exportButton,clearButton;
     private boolean active,clearDialogOpen;
@@ -83,10 +75,12 @@ public final class MainActivity extends Activity {
         LinearLayout main = new LinearLayout(this);
         main.setOrientation(LinearLayout.VERTICAL);
         main.setPadding(dp(16), dp(18), dp(16), dp(8));
-        main.setBackgroundColor(BACKGROUND);
-        setContentView(main);
+        ScrollView screen=new ScrollView(this);screen.setFillViewport(true);screen.setClipToPadding(true);
+        screen.setBackground(TechUi.backdrop());screen.addView(main,new ScrollView.LayoutParams(-1,-2));
+        setContentView(screen);TechUi.safeScreen(this,screen);
 
-        TextView title = text("DNS Observer", 27, TEXT, true);
+        TextView title = text("DNS Observer", 28, TEXT, true);
+        title.setLetterSpacing(0.035f);
         main.addView(title);
         TextView subtitle = text("系统 DNS 观察 · LSPosed API 102 · v"+BuildConfig.VERSION_NAME, 12, MUTED, false);
         subtitle.setPadding(0, dp(2), 0, dp(12));
@@ -95,12 +89,13 @@ public final class MainActivity extends Activity {
         LinearLayout overview = panel();
         state = text("检查 Hook 状态…", 14, AQUA, true);
         overview.addView(state);
+        state.setLetterSpacing(0.02f);
         stats = text("记录 0 · 域名 0 · 失败 0", 15, TEXT, true);
         stats.setPadding(0, dp(10), 0, dp(5));
         overview.addView(stats);
         note = text("", 12, MUTED, false);
         overview.addView(note);
-        main.addView(overview);
+        main.addView(overview);TechUi.spaced(overview);
 
         dnsControl = new Button(this);
         dnsControl.setText("DNS 接管 · 主备 DNS · IP 历史");
@@ -108,7 +103,9 @@ public final class MainActivity extends Activity {
         dnsControl.setAllCaps(false);
         dnsControl.setOnClickListener(v -> startActivity(
                 new Intent(this, DnsControlActivity.class)));
-        main.addView(dnsControl, new LinearLayout.LayoutParams(-1, -2));
+        TechUi.button(dnsControl,TechUi.PRIMARY);
+        LinearLayout.LayoutParams launchLp=new LinearLayout.LayoutParams(-1,-2);launchLp.topMargin=dp(12);launchLp.bottomMargin=dp(12);
+        main.addView(dnsControl,launchLp);
 
         LinearLayout controls = new LinearLayout(this);
         controls.setGravity(Gravity.CENTER_VERTICAL);
@@ -124,45 +121,43 @@ public final class MainActivity extends Activity {
             toast(checked ? "已恢复记录；系统端连接状态见上方" : "已暂停记录（Hook 仍保留）");
             requestRefresh();
         });
-        controls.addView(running, new LinearLayout.LayoutParams(0, -2, 1));
+        TechUi.toggle(running);main.addView(running,new LinearLayout.LayoutParams(-1,-2));
+        TechUi.spaced(running);
         Button export = exportButton = action("导出 CSV");
         export.setOnClickListener(v -> exportFile());
-        controls.addView(export);
+        controls.addView(export,new LinearLayout.LayoutParams(0,-2,1));
         Button clear = clearButton = action("清空记录");
         clear.setOnClickListener(v -> confirmClear());
-        controls.addView(clear);exportButton.setEnabled(false);clearButton.setEnabled(false);
+        LinearLayout.LayoutParams clearLp=new LinearLayout.LayoutParams(0,-2,1);clearLp.leftMargin=dp(10);
+        controls.addView(clear,clearLp);TechUi.button(clear,TechUi.DANGER);exportButton.setEnabled(false);clearButton.setEnabled(false);
         main.addView(controls);
 
-        LinearLayout filters = new LinearLayout(this);
-        filters.setGravity(Gravity.CENTER_VERTICAL);
+        TextView filterTitle=text("记录筛选",14,TEXT,true);filterTitle.setPadding(0,dp(12),0,dp(10));main.addView(filterTitle);
         search = new EditText(this);
-        search.setSingleLine(true);
-        search.setTextSize(13);
-        search.setTextColor(TEXT);
-        search.setHintTextColor(MUTED);
-        search.setHint("域名 / 应用 / 包名 / IP / DNS 服务器");
-        search.setPadding(dp(12), dp(5), dp(7), dp(5));
-        search.setBackground(bg(PANEL, dp(11)));
-        filters.addView(search, new LinearLayout.LayoutParams(0, -2, 1));
-        statusSpinner = new Spinner(this);
-        ArrayAdapter<String> adapter = new ArrayAdapter<>(this,
-                android.R.layout.simple_spinner_item, new String[]{"全部", "成功", "失败"});
-        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        statusSpinner.setAdapter(adapter);
-        statusSpinner.setBackground(bg(PANEL, dp(9)));
-        filters.addView(statusSpinner, new LinearLayout.LayoutParams(dp(78), dp(42)));
-        main.addView(filters);
+        search.setSingleLine(true);search.setHint("搜索域名、应用、IP 或 DNS 服务器");
+        TechUi.input(search);main.addView(search,new LinearLayout.LayoutParams(-1,-2));
+        LinearLayout filters=new LinearLayout(this);filters.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams filtersLp=new LinearLayout.LayoutParams(-1,-2);filtersLp.topMargin=dp(10);
+        main.addView(filters,filtersLp);
+        String[] options={"全部","成功","失败"};
+        for(int index=0;index<options.length;index++){
+            final int choice=index;Button chip=new Button(this);chip.setText(options[index]);TechUi.button(chip,TechUi.SECONDARY);
+            filterButtons[index]=chip;chip.setSelected(index==filter);chip.setText(options[index]+(index==filter?" ✓":""));
+            chip.setContentDescription("结果筛选："+options[index]+(index==filter?"，已选中":""));
+            LinearLayout.LayoutParams chipLp=new LinearLayout.LayoutParams(0,-2,1);if(index>0)chipLp.leftMargin=dp(8);
+            filters.addView(chip,chipLp);
+            chip.setOnClickListener(v->{filter=choice;
+                for(int i=0;i<filterButtons.length;i++){filterButtons[i].setSelected(i==filter);filterButtons[i].setText(options[i]+(i==filter?" ✓":""));filterButtons[i].setContentDescription("结果筛选："+options[i]+(i==filter?"，已选中":""));}
+                requestRefresh();});
+        }
 
         TextView caption = text("解析记录 · 3 秒刷新 · 状态筛选 · 点击展开 IP", 12, MUTED, false);
         caption.setPadding(0, dp(11), 0, dp(8));
         main.addView(caption);
-        ScrollView scroll = new ScrollView(this);
-        scroll.setFillViewport(true);
-        scroll.setClipToPadding(false);
         results = new LinearLayout(this);
         results.setOrientation(LinearLayout.VERTICAL);
-        scroll.addView(results);
-        main.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
+        // One page scroller keeps controls reachable on small screens / large fonts.
+        main.addView(results,new LinearLayout.LayoutParams(-1,-2));
 
         search.addTextChangedListener(new TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) { }
@@ -172,13 +167,7 @@ public final class MainActivity extends Activity {
             }
             @Override public void afterTextChanged(Editable e) { }
         });
-        statusSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-            @Override public void onItemSelected(AdapterView<?> p, View view, int pos, long id) {
-                filter = pos;
-                requestRefresh();
-            }
-            @Override public void onNothingSelected(AdapterView<?> p) { }
-        });
+
     }
 
     private LinearLayout panel() {
@@ -197,7 +186,7 @@ public final class MainActivity extends Activity {
         b.setMinWidth(0);
         b.setMinimumWidth(0);
         b.setPadding(dp(5), dp(7), dp(5), dp(7));b.setMinHeight(dp(46));
-        b.setBackground(bg(PANEL, dp(9)));
+        TechUi.button(b,TechUi.SECONDARY);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(78), -2);
         lp.leftMargin = dp(5);
         b.setLayoutParams(lp);
@@ -214,7 +203,7 @@ public final class MainActivity extends Activity {
     private GradientDrawable bg(int color, int r) {
         GradientDrawable d = new GradientDrawable();
         d.setColor(color);
-        d.setCornerRadius(r);
+        d.setCornerRadius(r);d.setStroke(dp(1),0xff29415c);
         return d;
     }
     private int dp(int n) { return Math.round(n * getResources().getDisplayMetrics().density); }
@@ -318,7 +307,7 @@ public final class MainActivity extends Activity {
             host.setMaxLines(2);
             heading.addView(host,new LinearLayout.LayoutParams(0,-2,1));
             TextView result=text(e.rc==0?"成功":"失败",12,e.rc==0?GREEN:RED,true);
-            result.setPadding(dp(8),0,0,0);
+            TechUi.badge(result,e.rc==0);
             heading.addView(result);
             card.addView(heading);
             // Old v0.4.0 rows have no appName; never discard their known package.
@@ -337,6 +326,7 @@ public final class MainActivity extends Activity {
             TextView ip=text(addresses.isEmpty()?"未返回 IP":preview,13,AQUA,false);
             ip.setPadding(0,dp(5),0,dp(5));
             card.addView(ip);
+            if(many)TechUi.disclosure(ip);
             if(many) ip.setOnClickListener(new View.OnClickListener(){boolean expanded;
                 @Override public void onClick(View v){expanded=!expanded;ip.setText(expanded?addresses:preview);}
             });
@@ -371,8 +361,8 @@ public final class MainActivity extends Activity {
         clearButton.setEnabled(!exportBusy&&!clearBusy&&count>0);
         exportButton.setText(exportBusy?"正在导出…":count==0?"暂无记录":"导出 CSV");
         clearButton.setText(clearBusy?"正在清空…":count==0?"记录为空":"清空记录");
-        exportButton.setAlpha(exportButton.isEnabled()?1f:0.45f);
-        clearButton.setAlpha(clearButton.isEnabled()?1f:0.45f);
+        exportButton.setAlpha(1f);
+        clearButton.setAlpha(1f);
     }
     private void confirmClear() {
         if(clearBusy||exportBusy||clearDialogOpen)return;

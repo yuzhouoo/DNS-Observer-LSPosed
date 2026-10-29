@@ -14,7 +14,7 @@
         android:allowBackup="false"
         android:label="DNS Observer"
         android:description="@string/module_description"
-        android:theme="@android:style/Theme.Material.NoActionBar"
+        android:theme="@style/Theme.DnsObserver"
         android:usesCleartextTraffic="false">
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>
