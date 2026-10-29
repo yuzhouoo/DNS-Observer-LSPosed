@@ -39,6 +39,7 @@ jobs:
           sh -n app/src/main/assets/dns-ipv6-global.sh
           sh -n app/src/main/assets/system-ipv6.sh
           sh -n app/src/main/assets/dns-ui-status.sh
+          python3 tests/test_ipv6_route_failure.py
           python3 tests/test_ui_status_probe.py
           python3 tests/test_system_ipv6.py
           python3 tests/test_takeover_v062.py
@@ -61,6 +62,9 @@ jobs:
             app/src/main/java/dev/yz/dnsobserver/DnsFailover.java \
             app/src/main/java/dev/yz/dnsobserver/DnsFeatureState.java \
             tests/DnsFeatureStateTest.java \
+            app/src/main/java/dev/yz/dnsobserver/RootScriptFiles.java \
+            tests/stubs/android/content/Context.java \
+            tests/RootScriptFilesTest.java \
             tests/DnsPacketTest.java \
             tests/DnsUpstreamExchangeTest.java \
             tests/DnsProbeTest.java \
@@ -68,6 +72,7 @@ jobs:
             app/src/main/java/dev/yz/dnsobserver/DnsDiagnosis.java \
             tests/DnsIcmpProbeTest.java \
             tests/DnsFailoverTest.java
+          java -cp /tmp/dnsobserver-jvm dev.yz.dnsobserver.RootScriptFilesTest
           java -cp /tmp/dnsobserver-jvm dev.yz.dnsobserver.DnsFeatureStateTest
           java -cp /tmp/dnsobserver-jvm dev.yz.dnsobserver.DnsPacketTest
           java -cp /tmp/dnsobserver-jvm dev.yz.dnsobserver.DnsUpstreamExchangeTest
@@ -103,11 +108,11 @@ jobs:
           print('Verified: Modern API 102 resources included; no legacy entry')
           PY
       - name: Package complete source snapshot
-        run: git archive --format=zip --output=DNSObserver-v0.6.4-beta2-source.zip HEAD
+        run: git archive --format=zip --output=DNSObserver-v0.6.4-beta3-source.zip HEAD
       - uses: actions/upload-artifact@v4
         with:
-          name: DNSObserver-v0.6.4-beta2-source
-          path: DNSObserver-v0.6.4-beta2-source.zip
+          name: DNSObserver-v0.6.4-beta3-source
+          path: DNSObserver-v0.6.4-beta3-source.zip
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:

@@ -25,9 +25,9 @@ assert 'if(DnsIpv6PilotController.isRunning())' in control
 assert 'DnsIpv6GlobalController.isRunning()' in (base/'DnsIpv6PilotController.java').read_text()
 assert 'selfTest(app)' in control and 'root(app,"promote",token,12)' in control
 assert control.index('if(!selfTest(app))') < control.index('root(app,"promote",token,12)')
-assert control.index('preflight(app)') < control.index('root(app,"install-probe"')
+assert control.index('preflight(app,allowed)') < control.index('root(app,"install-probe"')
 assert 'root(ctx,"recover","cleanup",14)' in control
-assert 'installAttempted' in control and 'PRECHECK_FAILED' in control
+assert 'installAttempted' in control and 'PRECHECK_FAILED' in control and 'rollbackConfirmed' in control
 assert 'DnsIpv6GlobalController.stop' in (base/'DnsTakeoverService.java').read_text() and 'DnsIpv6GlobalController.start' in (base/'DnsTakeoverService.java').read_text()
 assert '清空 IPv6 日志' in ui and '复制 IPv6 全部日志' in ui
 assert 'logArea(root,ipv6GlobalLog,155)' in ui

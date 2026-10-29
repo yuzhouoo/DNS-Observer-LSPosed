@@ -70,15 +70,7 @@ public final class DnsIpv6GlobalController {
         synchronized(LOCK){return starting||(process!=null && process.isAlive());}
     }
     private static File script(Context ctx)throws Exception{
-        File file=new File(ctx.getFilesDir(),SCRIPT);
-        if(file.isFile() && file.length()>3500)return file;
-        try(InputStream in=ctx.getAssets().open("dns-ipv6-global.sh");FileOutputStream out=new FileOutputStream(file)){
-            byte[] buffer=new byte[4096];int n;
-            while((n=in.read(buffer))!=-1)out.write(buffer,0,n);
-            out.getFD().sync();
-        }
-        if(!file.setReadable(true,true)||!file.setWritable(true,true))throw new IllegalStateException("Root 脚本权限错误");
-        return file;
+        return RootScriptFiles.install(ctx,"dns-ipv6-global.sh",SCRIPT);
     }
     private static String root(Context ctx,String mode,String session,int seconds)throws Exception{
         return root(ctx,mode,session,seconds,0);
@@ -99,23 +91,26 @@ public final class DnsIpv6GlobalController {
         },"IPv6-global-root-capture");
         output.setDaemon(true);output.start();
         if(!p.waitFor(seconds,TimeUnit.SECONDS)){p.destroyForcibly();throw new IllegalStateException("Root "+mode+" 超时");}
+        output.join(300);
         String result=buffer.toString(StandardCharsets.UTF_8.name()).trim();
         if(p.exitValue()!=0)throw new IllegalStateException("Root "+mode+" rc="+p.exitValue()+" "+result);
         return result;
     }
-    private static List<Endpoint> preflight(Context ctx)throws Exception{
+    private static List<Endpoint> preflight(Context ctx,java.util.function.BooleanSupplier allowed)throws Exception{
         SharedPreferences prefs=ctx.getSharedPreferences(DnsForwardService.PREFS,Context.MODE_PRIVATE);
         String[] hosts={prefs.getString("host",""),prefs.getString("sub_host",""),prefs.getString("secondary_host","")};
         String[] ports={"port","sub_port","secondary_port"};
         String[] names={"主","从","备"};
         List<Endpoint> result=new ArrayList<>();
         for(int i=0;i<3;i++){
+            ensureAllowed(allowed);
             String host=hosts[i]==null?"":hosts[i].trim();if(host.isEmpty())continue;
             int port=Integer.parseInt(prefs.getString(ports[i],"31017").trim());
             if(port<1||port>65535)throw new IllegalArgumentException(names[i]+"端口不合法");
             InetAddress[] addresses=DnsBootstrap.resolve(host,prefs.getString("bootstrap",""));
             boolean ready=false;
             for(int n=0;n<Math.min(addresses.length,6);n++){
+                ensureAllowed(allowed);
                 InetAddress ip=addresses[n];if(!DnsUpstreamExchange.permittedUpstream(ip))continue;
                 DnsProbe.Sample udp=DnsProbe.measure(ip,port,"UDP"),tcp=DnsProbe.measure(ip,port,"TCP");
                 if(udp.success&&tcp.success){
@@ -219,7 +214,11 @@ public final class DnsIpv6GlobalController {
         return all;
     }
     /** Manual action; no boot start. Rule broadening is only reached after four real replies. */
-    public static String start(Context ctx){
+    private static void ensureAllowed(java.util.function.BooleanSupplier allowed)throws Exception {
+        if(!allowed.getAsBoolean())throw new java.io.IOException("用户已取消 IPv6 接管启动");
+    }
+    public static String start(Context ctx){return start(ctx,()->true);}
+    public static String start(Context ctx,java.util.function.BooleanSupplier allowed){
         Context app=ctx.getApplicationContext();
         synchronized(LOCK){
             if(starting||(process!=null&&process.isAlive()))return "IPv6 全局试用已经运行或启动中";
@@ -230,19 +229,23 @@ public final class DnsIpv6GlobalController {
             boolean installAttempted=false;
             log(app,"启动 IPv6 DNS 全局接管（非 Root UID；手动停止、无定时到期）");
             try{
-                List<Endpoint> servers=preflight(app);
+                List<Endpoint> servers=preflight(app,allowed);
+                ensureAllowed(allowed);
                 started=spawn(app,token,servers);process=started;
                 String ready=signals.poll(8000,TimeUnit.MILLISECONDS);
                 if(ready==null||!ready.startsWith("DNS6GLOBAL READY"))throw new IllegalStateException("代理未就绪："+ready);
                 rootPid=parseRootPid(ready);
                 if(rootPid<=1)throw new IllegalStateException("Root 代理未报告可核验 PID，拒绝安装规则");
+                ensureAllowed(allowed);
                 installAttempted=true;
                 String installed=root(app,"install-probe",token,12);ownsRules=true;log(app,installed);
                 if(!selfTest(app))throw new IllegalStateException("原始 IPv6 目标/回包自检未全通过，禁止扩大匹配");
+                ensureAllowed(allowed);
                 log(app,root(app,"promote",token,12));promoted=true;
                 // One more check with broad selectors active; failures always revert.
                 if(!probe("UDP",DOCS[0])||!probe("TCP",DOCS[1]))
                     throw new IllegalStateException("扩大规则后的回包验证失败，立即恢复");
+                ensureAllowed(allowed);
                 final java.lang.Process monitor=started;
                 Thread guard=new Thread(()->{
                     try{monitor.waitFor();}catch(InterruptedException ex){Thread.currentThread().interrupt();}
@@ -262,12 +265,17 @@ public final class DnsIpv6GlobalController {
                 process=null;rootPid=0;
                 // A PRECHECK_FAILED never owns a chain; do not touch another session.
                 // Other failures can be partial installations, so always verify recovery.
-                if(ownsRules||(installAttempted && (error.getMessage()==null ||
-                        !error.getMessage().contains("PRECHECK_FAILED")))){
-                    try{log(app,root(app,"recover",token,12));ownsRules=false;promoted=false;}
-                    catch(Exception ex){log(app,"清理未确认："+ex.getMessage());}
+                boolean rollbackNeeded=ownsRules||(installAttempted && (error.getMessage()==null ||
+                        !error.getMessage().contains("PRECHECK_FAILED")));
+                boolean rollbackConfirmed=!rollbackNeeded;
+                if(rollbackNeeded){
+                    try{
+                        String recovered=root(app,"recover",token,12);log(app,recovered);
+                        rollbackConfirmed=recovered.contains("VERIFY_CLEAN")&&recovered.contains("RECOVERED");
+                        if(rollbackConfirmed){ownsRules=false;promoted=false;}
+                    }catch(Exception ex){log(app,"清理未确认："+ex.toString());}
                 }
-                return "未开启 IPv6 全局 DNS，已执行回滚："+error.getMessage();
+                return "未开启 IPv6 全局 DNS，"+(rollbackNeeded?(rollbackConfirmed?"已验证回滚":"回滚未确认，请执行关闭清理"):"未安装本次规则")+"："+error.getMessage();
             }finally{starting=false;}
         }
     }

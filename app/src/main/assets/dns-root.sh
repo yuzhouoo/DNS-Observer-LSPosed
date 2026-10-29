@@ -13,7 +13,7 @@ MARKER="/data/local/tmp/dobsr53_${UID_ARG}.run"
 case "$UID_ARG" in ''|*[!0-9]*) exit 2;; esac
 case "$PORT" in ''|*[!0-9]*) exit 2;; esac
 case "$V6" in 0|1) ;; *) exit 2;; esac
-case "$ACTION" in install|remove|watch|status) ;; *) exit 2;; esac
+case "$ACTION" in install|remove|watch|status|verify-clean) ;; *) exit 2;; esac
 [ "$PORT" -ge 1024 ] && [ "$PORT" -le 65535 ] || exit 2
 
 IPT="$(command -v iptables 2>/dev/null || true)"
@@ -55,6 +55,13 @@ prepare_family() {
 }
 
 case "$ACTION" in
+  verify-clean)
+    rules=$("$IPT" -t nat -S 2>&1) || { echo "VERIFY_UNKNOWN: $rules"; exit 11; }
+    if printf '%s\n' "$rules" | grep -q "$CHAIN" || [ -f "$MARKER" ]; then
+        echo VERIFY_FAILED: IPv4 rules or marker remain; exit 12
+    fi
+    echo VERIFY_CLEAN: IPv4 rules and marker absent
+    ;;
   remove)
     # Watchers exit because the marker no longer matches.
     rm -f "$MARKER"

@@ -122,11 +122,12 @@ public final class DnsTakeoverService extends Service {
                 startForegroundService(ipv4Intent(p));
                 status("IPv4 启动请求已发送；正在安装 NAT 接管规则");
             } else {
-                try{DnsRootRules.remove(this);}catch(Exception ex){status("IPv4 清理失败："+ex.getMessage());}
+                try{DnsRootRules.remove(this);}catch(Exception ex){status("IPv4 清理失败："+ex.toString());}
             }
             if(stopped)return;
             if(expect6){
-                String result=DnsIpv6GlobalController.start(this);
+                String result=DnsIpv6GlobalController.start(this,()->!stopped&&prefs().getBoolean("takeover_enabled",false));
+                if(stopped||!prefs().getBoolean("takeover_enabled",false))return;
                 status("IPv6："+result);
                 if(result.startsWith("IPv6 DNS53 已启用") && DnsIpv6GlobalController.active(this)){
                     ipv6EverActive=true;
@@ -139,7 +140,10 @@ public final class DnsTakeoverService extends Service {
             }else{
                 status("IPv6 未勾选；本次不启动 IPv6 代理");
             }
-            status("接管任务已按勾选协议提交；无自动到期关闭");
+            if(stopped||!prefs().getBoolean("takeover_enabled",false))return;
+            status("接管启动检查：IPv4="+(!expect4?"未选择":DnsForwardService.isStarting()?"启动中":
+                DnsForwardService.isServing()&&DnsRootRules.active(this)?"已启用":"未就绪，请查看服务状态")+
+                "；IPv6="+(!expect6?"未选择":ipv6EverActive?"已启用":"启动失败，已暂停自动重试"));
         }catch(Exception ex){status("启动失败："+ex.getClass().getSimpleName()+" "+ex.getMessage());}
         if(!stopped)uiPhase="monitoring";
         Thread observer=new Thread(this::monitor,"DNS-takeover-observer");
@@ -149,6 +153,15 @@ public final class DnsTakeoverService extends Service {
         while(!stopped && prefs().getBoolean("takeover_enabled",false)){
             try{Thread.sleep(15000);}catch(InterruptedException e){Thread.currentThread().interrupt();break;}
             if(stopped || !prefs().getBoolean("takeover_enabled",false))break;
+            // Root repair and stop share the same queue: a repair cannot install late rules
+            // after stopAll has already reported cleanup complete.
+            try{io.submit(this::checkAndRepair).get();}
+            catch(InterruptedException ex){Thread.currentThread().interrupt();break;}
+            catch(Exception ex){if(!stopped)event(this,"状态检查任务结束："+ex.toString());break;}
+        }
+    }
+    private void checkAndRepair(){
+        if(stopped||!prefs().getBoolean("takeover_enabled",false))return;
             SharedPreferences p=prefs(); boolean heal=p.getBoolean("takeover_auto_repair",false);
             if(expect4){
                 boolean active=p.getBoolean("running",false)&&DnsRootRules.active(this);
@@ -163,7 +176,7 @@ public final class DnsTakeoverService extends Service {
                     }
                 }else fault4=false;
             }
-            if(stopped)break;
+            if(stopped)return;
             if(expect6 && ipv6EverActive && !ipv6RepairBlocked){
                 boolean active=DnsIpv6GlobalController.active(this);
                 if(!active){
@@ -178,7 +191,8 @@ public final class DnsTakeoverService extends Service {
                             if(!old.contains("VERIFY_CLEAN")){
                                 status("REPAIR_PAUSED IPv6: 自身规则清理未确认；禁止重试");
                             }else if(!stopped && prefs().getBoolean("takeover_enabled",false)){
-                                String result=DnsIpv6GlobalController.start(this);
+                                String result=DnsIpv6GlobalController.start(this,()->!stopped&&prefs().getBoolean("takeover_enabled",false));
+                                if(stopped||!prefs().getBoolean("takeover_enabled",false))return;
                                 if(result.startsWith("IPv6 DNS53 已启用") && DnsIpv6GlobalController.active(this)){
                                     fault6=false;ipv6RepairBlocked=false;
                                     status("REPAIR_OK IPv6: 服务及规则已恢复");
@@ -188,33 +202,34 @@ public final class DnsTakeoverService extends Service {
                     }
                 }else fault6=false;
             }
-        }
     }
     private void stopAll(){
         uiPhase="stopping";stopped=true;expect4=false;expect6=false;
         ipv6EverActive=false;ipv6RepairBlocked=true;
         StringBuilder b=new StringBuilder("关闭接管：");
         try{startService(new Intent(this,DnsForwardService.class).setAction(DnsForwardService.ACTION_STOP));
-            b.append(" IPv4 服务停止请求已发出；");}catch(Exception ex){b.append(" IPv4 服务停止请求失败：").append(ex.getMessage());}
+            b.append(" IPv4 服务停止请求已发出；");}catch(Exception ex){b.append(" IPv4 服务停止请求失败：").append(ex.toString());}
         try{DnsRootRules.remove(this);b.append(" IPv4 规则已清理；");}
-        catch(Exception ex){b.append(" IPv4 清理失败：").append(ex.getMessage());}
+        catch(Exception ex){b.append(" IPv4 清理失败：").append(ex.toString());}
         boolean clean6=false;
         try{String v6=DnsIpv6GlobalController.stop(this);b.append(" IPv6 ").append(v6).append('；');clean6=v6.contains("VERIFY_CLEAN");}
-        catch(Exception ex){b.append(" IPv6 清理失败：").append(ex.getMessage());}
+        catch(Exception ex){b.append(" IPv6 清理失败：").append(ex.toString());}
         try{DnsIpv6PilotController.stop(this);DnsIpv6Experiment.recover(this);b.append(" 旧实验规则已检查；");}
-        catch(Exception ex){b.append(" 旧实验恢复失败：").append(ex.getMessage());}
+        catch(Exception ex){b.append(" 旧实验恢复失败：").append(ex.toString());}
         // IPv4 stop runs asynchronously: wait for its firewallLock cleanup before final report.
         for(int retry=0;retry<5 && DnsRootRules.active(this);retry++) {
             try{Thread.sleep(300);}catch(InterruptedException ex){Thread.currentThread().interrupt();break;}
         }
         if(DnsRootRules.active(this)) {
-            try{DnsRootRules.remove(this);}catch(Exception ex){b.append(" IPv4 二次清理失败：").append(ex.getMessage());}
+            try{DnsRootRules.remove(this);}catch(Exception ex){b.append(" IPv4 二次清理失败：").append(ex.toString());}
         }
-        boolean clean4=!DnsRootRules.active(this);
+        boolean clean4=false;
+        try{clean4=DnsRootRules.clean(this);}
+        catch(Exception ex){b.append(" IPv4 关闭校验未确认：").append(ex.toString());}
         status(b.toString()+" IPv4="+(clean4?"VERIFY_CLEAN":"VERIFY_FAILED")+"，IPv6="+(clean6?"VERIFY_CLEAN":"VERIFY_FAILED/请核对恢复日志"));
         monitoring=false;uiPhase="idle";
         stopForeground(STOP_FOREGROUND_REMOVE);
         stopSelf();
     }
-    @Override public void onDestroy(){stopped=true;uiPhase="idle";io.shutdownNow();super.onDestroy();}
+    @Override public void onDestroy(){stopped=true;uiPhase="idle";io.shutdown();super.onDestroy();}
 }

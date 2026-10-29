@@ -70,6 +70,62 @@ verify_clean() {
     if [ "$bad" -eq 0 ]; then echo 'VERIFY_CLEAN: global module rules and routes absent'; return 0; fi
     echo 'VERIFY_FAILED: global module residue; manual cleanup required' >&2; return 1
 }
+# Android kernels return EACCES for a route whose nexthop has disable_ipv6=1.
+# Only temporarily enable lo; never override a system-wide IPv4-only choice.
+CONF=/proc/sys/net/ipv6/conf
+BOOT_FILE=/proc/sys/kernel/random/boot_id
+LO_STATE="/data/adb/dnsobserver-v6-lo_${APP_UID}"
+network_diagnostics() {
+    echo "IPV6_ROUTE_CONTEXT uid=$(id -u) context=$(cat /proc/self/attr/current 2>/dev/null)"
+    grep -E '^(CapEff|CapPrm):' /proc/self/status 2>/dev/null || true
+    for iface in all default lo; do
+        echo "disable_ipv6.$iface=$(cat "$CONF/$iface/disable_ipv6" 2>/dev/null || echo unknown)"
+    done
+    "$IP" -6 addr show dev lo 2>&1 || true
+}
+restore_loopback() {
+    [ -f "$LO_STATE" ] || return 0
+    read -r saved_boot saved_token saved_value extra < "$LO_STATE" || return 1
+    case "$saved_value" in 0|1) ;; *) echo LOOPBACK_RESTORE_FAILED: invalid snapshot; return 1;; esac
+    [ -z "$extra" ] || return 1
+    boot=$(cat "$BOOT_FILE") || return 1
+    if [ "$boot" != "$saved_boot" ]; then rm -f "$LO_STATE"; return $?; fi
+    # Normal session cleanup is token scoped; explicit cleanup may recover an orphan.
+    [ "$TOKEN" = cleanup ] || [ "$TOKEN" = "$saved_token" ] || { echo LOOPBACK_RESTORE_REFUSED: another session; return 1; }
+    printf '%s\n' "$saved_value" > "$CONF/lo/disable_ipv6" || { echo LOOPBACK_RESTORE_FAILED: write denied; return 1; }
+    [ "$(cat "$CONF/lo/disable_ipv6")" = "$saved_value" ] || { echo LOOPBACK_RESTORE_FAILED: readback mismatch; return 1; }
+    rm -f "$LO_STATE" || return 1
+    echo "LOOPBACK_RESTORED: disable_ipv6=$saved_value"
+}
+prepare_loopback() {
+    all=$(cat "$CONF/all/disable_ipv6") || return 1
+    default=$(cat "$CONF/default/disable_ipv6") || return 1
+    lo=$(cat "$CONF/lo/disable_ipv6") || return 1
+    if [ "$all" != 0 ] || [ "$default" != 0 ]; then
+        echo 'IPV6_SYSTEM_DISABLED: 请先关闭系统 IPv6 禁用功能，再开启 IPv6 DNS 接管' >&2
+        return 1
+    fi
+    case "$lo" in
+      0) echo LOOPBACK_READY: IPv6 already enabled; return 0;;
+      1) ;;
+      *) echo LOOPBACK_PRECHECK_FAILED: unknown kernel value; return 1;;
+    esac
+    [ ! -e "$LO_STATE" ] && [ ! -L "$LO_STATE" ] || { echo LOOPBACK_PRECHECK_FAILED: previous snapshot exists; return 1; }
+    umask 077
+    boot=$(cat "$BOOT_FILE") || return 1
+    # noclobber prevents replacing an earlier lease; only root can access /data/adb.
+    (set -C; printf '%s %s %s\n' "$boot" "$TOKEN" "$lo" > "$LO_STATE") || return 1
+    printf '0\n' > "$CONF/lo/disable_ipv6" || return 1
+    [ "$(cat "$CONF/lo/disable_ipv6")" = 0 ] || return 1
+    echo LOOPBACK_TEMP_ENABLED: original=1 current=0
+}
+rollback_owned() {
+    clear_owned
+    if verify_clean && restore_loopback; then rm -f "$MARKER"; return 0; fi
+    echo ROLLBACK_UNCONFIRMED: rules or loopback snapshot retained >&2
+    return 1
+}
+
 case "$MODE" in
  stop-owned-daemons)
     # Explicit user STOP only. Kill exclusively DNS Observer global Root
@@ -137,7 +193,7 @@ case "$MODE" in
     ;;
  recover)
     clear_owned
-    if verify_clean; then rm -f "$MARKER"; echo 'RECOVERED: verified clean'; else exit 11; fi
+    if verify_clean && restore_loopback; then rm -f "$MARKER"; echo 'RECOVERED: verified clean'; else exit 11; fi
     ;;
  check)
     [ "$(cat "$MARKER" 2>/dev/null)" = "global:$TOKEN" ] || exit 1
@@ -152,6 +208,7 @@ case "$MODE" in
     echo 'ACTIVE: IPv6 TPROXY selectors complete'
     ;;
  status)
+    network_diagnostics
     echo 'OUTPUT/PREROUTING:'
     "$IP6" -t mangle -L OUTPUT -n -v -x 2>&1 | grep -E '2000::/3|fc00::/7' || true
     "$IP6" -t mangle -L PREROUTING -n -v -x 2>&1 | grep "$CHAIN" || true
@@ -179,22 +236,34 @@ case "$MODE" in
     fi
     "$IP6" -t mangle -m owner -h >/dev/null 2>&1 || { echo 'PRECHECK_FAILED: owner match unavailable' >&2; exit 4; }
     "$IP6" -t mangle -j TPROXY -h >/dev/null 2>&1 || { echo 'PRECHECK_FAILED: TPROXY missing' >&2; exit 4; }
+    if [ -e "$LO_STATE" ] || [ -L "$LO_STATE" ]; then
+        echo 'PRECHECK_FAILED: previous loopback snapshot exists; close/cleanup before retry' >&2
+        exit 4
+    fi
     printf 'probe:%s\n' "$TOKEN" > "$MARKER" || exit 5
     chmod 600 "$MARKER" || true
     # Crash-only guard, NO periodic expiration. This guard releases stale rules
     # only when the owning Android process disappears, never after a TTL.
     case "$OWNER_PID" in ''|*[!0-9]*) echo 'PRECHECK_FAILED: missing owner PID' >&2; rm -f "$MARKER"; exit 4;; esac
     /system/bin/sh "$0" watch "$APP_UID" "$TOKEN" "$OWNER_PID" </dev/null >/dev/null 2>&1 &
-    "$IP6" -t mangle -N "$CHAIN" || { clear_owned; exit 5; }
+    "$IP6" -t mangle -N "$CHAIN" || { rollback_owned; exit 5; }
     for proto in udp tcp; do
-        "$IP6" -t mangle -A "$CHAIN" -p "$proto" -j TPROXY --on-ip ::1 --on-port "$PROXY" --tproxy-mark "$MARK" || { clear_owned; exit 6; }
+        "$IP6" -t mangle -A "$CHAIN" -p "$proto" -j TPROXY --on-ip ::1 --on-port "$PROXY" --tproxy-mark "$MARK" || { rollback_owned; exit 6; }
     done
-    "$IP" -6 route add local ::/0 dev lo table "$TABLE" || { clear_owned; exit 7; }
-    "$IP" -6 rule add pref "$PREF" fwmark "$MARK" lookup "$TABLE" || { clear_owned; exit 8; }
+    if ! prepare_loopback; then
+        network_diagnostics >&2
+        rollback_owned; exit 7
+    fi
+    if ! "$IP" -6 route add local ::/0 dev lo table "$TABLE"; then
+        echo 'ROUTE_INSTALL_FAILED: local ::/0 dev lo table 19754; inspect interface/capability/SELinux context above' >&2
+        network_diagnostics >&2
+        rollback_owned; exit 7
+    fi
+    "$IP" -6 rule add pref "$PREF" fwmark "$MARK" lookup "$TABLE" || { rollback_owned; exit 8; }
     for proto in udp tcp; do
-        "$IP6" -t mangle -I PREROUTING 1 -i lo -p "$proto" --dport 53 -m mark --mark "$MARK" -j "$CHAIN" || { clear_owned; exit 9; }
+        "$IP6" -t mangle -I PREROUTING 1 -i lo -p "$proto" --dport 53 -m mark --mark "$MARK" -j "$CHAIN" || { rollback_owned; exit 9; }
         for subnet in '2000::/3' 'fc00::/7'; do
-            "$IP6" -t mangle -I OUTPUT 1 -d "$subnet" -p "$proto" --dport 53 -m owner --uid-owner "$APP_UID" -j MARK --set-xmark "$MARK" || { clear_owned; exit 10; }
+            "$IP6" -t mangle -I OUTPUT 1 -d "$subnet" -p "$proto" --dport 53 -m owner --uid-owner "$APP_UID" -j MARK --set-xmark "$MARK" || { rollback_owned; exit 10; }
         done
     done
     echo 'INSTALLED_PROBE: App UID only, multi-destination original-dst selftest'
@@ -212,15 +281,15 @@ case "$MODE" in
     # Root UID 0 excluded to prevent DNS forwarding recursion.
     for proto in udp tcp; do
         for subnet in '2000::/3' 'fc00::/7'; do
-            "$IP6" -t mangle -I OUTPUT 1 -d "$subnet" -p "$proto" --dport 53 -m owner ! --uid-owner 0 -j MARK --set-xmark "$MARK" || { clear_owned; exit 10; }
+            "$IP6" -t mangle -I OUTPUT 1 -d "$subnet" -p "$proto" --dport 53 -m owner ! --uid-owner 0 -j MARK --set-xmark "$MARK" || { rollback_owned; exit 10; }
         done
     done
     for proto in udp tcp; do
         for subnet in '2000::/3' 'fc00::/7'; do
-            "$IP6" -t mangle -D OUTPUT -d "$subnet" -p "$proto" --dport 53 -m owner --uid-owner "$APP_UID" -j MARK --set-xmark "$MARK" || { clear_owned; exit 11; }
+            "$IP6" -t mangle -D OUTPUT -d "$subnet" -p "$proto" --dport 53 -m owner --uid-owner "$APP_UID" -j MARK --set-xmark "$MARK" || { rollback_owned; exit 11; }
         done
     done
-    printf 'global:%s\n' "$TOKEN" > "$MARKER" || { clear_owned; exit 12; }
+    printf 'global:%s\n' "$TOKEN" > "$MARKER" || { rollback_owned; exit 12; }
     echo 'PROMOTED: globally scoped non-root IPv6 unicast DNS53, UID 0 excluded'
     ;;
  watch)
@@ -238,7 +307,7 @@ case "$MODE" in
     state="$(cat "$MARKER" 2>/dev/null)"
     if [ "$state" = "probe:$TOKEN" ] || [ "$state" = "global:$TOKEN" ]; then
         clear_owned
-        if verify_clean; then rm -f "$MARKER"; fi
+        if verify_clean && restore_loopback; then rm -f "$MARKER"; fi
     fi
     ;;
 esac

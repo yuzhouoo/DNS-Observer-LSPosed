@@ -12,7 +12,7 @@ else echo V4=unknown; fi
 # If mangle is unavailable but IPv6 is fully disabled, IPv6 rules still remain unknown.
 if rules=$(ip6tables -w 2 -t mangle -S 2>/dev/null) && routes=$(ip -6 rule show 2>/dev/null); then
     if printf '%s\n%s\n' "$rules" "$routes" | grep -Eq 'DO6G061|DO6TST55|15010:|15000:|0x40000000|0x20000000' ||
-       [ -f "/data/local/tmp/dobs6g61_${uid}.run" ] || [ -f "/data/local/tmp/dobs6t55_${uid}.run" ]; then
+       [ -f "/data/adb/dnsobserver-v6-lo_${uid}" ] || [ -f "/data/local/tmp/dobs6g61_${uid}.run" ] || [ -f "/data/local/tmp/dobs6t55_${uid}.run" ]; then
         echo V6=present
     else
         # Missing tables commonly return rc=2; an existing nonempty table indicates residue.

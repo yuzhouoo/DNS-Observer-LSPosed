@@ -18,19 +18,7 @@ public final class DnsRootRules {
     private DnsRootRules() { }
 
     private static File script(Context context) throws Exception {
-        File file = new File(context.getFilesDir(), SCRIPT);
-        if (file.isFile() && file.length() > 300) return file;
-        try (InputStream in = context.getAssets().open("dns-root.sh");
-             FileOutputStream out = new FileOutputStream(file, false)) {
-            byte[] buffer = new byte[4096];
-            int n;
-            while ((n = in.read(buffer)) != -1) out.write(buffer, 0, n);
-            out.getFD().sync();
-        }
-        if (!file.setReadable(true, true) || !file.setWritable(true, true)) {
-            throw new IllegalStateException("无法保护 Root 脚本文件权限");
-        }
-        return file;
+        return RootScriptFiles.install(context,"dns-root.sh",SCRIPT);
     }
 
     private static String path(File file) {
@@ -43,7 +31,7 @@ public final class DnsRootRules {
         String file = path(script(ctx));
         int uid = Process.myUid();
         int pid = Process.myPid();
-        if (!mode.matches("install|remove|watch|status") || !token.matches("[a-zA-Z0-9_-]{1,64}")) {
+        if (!mode.matches("install|remove|watch|status|verify-clean") || !token.matches("[a-zA-Z0-9_-]{1,64}")) {
             throw new IllegalArgumentException("invalid command arguments");
         }
         String cmd = "/system/bin/sh " + file + " " + mode + " " + uid + " "
@@ -66,6 +54,7 @@ public final class DnsRootRules {
             proc.destroyForcibly();
             throw new IllegalStateException("Root 命令超时: " + mode);
         }
+        drain.join(300);
         if (proc.exitValue() != 0) {
             throw new IllegalStateException("Root " + mode + " 失败 (" + proc.exitValue() + "): "
                     + new String(output.toByteArray(), StandardCharsets.UTF_8).trim());
@@ -97,6 +86,10 @@ public final class DnsRootRules {
             }
             return proc.exitValue() == 0;
         } catch (Exception e) { return false; }
+    }
+
+    public static boolean clean(Context ctx) throws Exception {
+        return invoke(ctx,"verify-clean",false,"cleanup",6).contains("VERIFY_CLEAN");
     }
 
     public static boolean active(Context ctx) {
