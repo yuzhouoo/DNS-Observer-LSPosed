@@ -37,6 +37,15 @@ public final class DnsForwardService extends Service {
     private static final int MAX_QUERY = 16384;
     private static final int TIMEOUT = 3000;
 
+    private static volatile DnsForwardService instance;
+    private volatile boolean starting;
+    public static boolean isStarting(){DnsForwardService s=instance;return s!=null && s.starting;}
+    @Override public void onCreate(){super.onCreate();instance=this;}
+    public static boolean isServing(){
+        DnsForwardService s=instance;
+        return s!=null && s.running && s.activated && s.udp4!=null && !s.udp4.isClosed()
+            && s.tcp4!=null && !s.tcp4.isClosed();
+    }
     private volatile boolean running, activated;
     private volatile boolean cancellationRequested;
     private final Object firewallLock = new Object();
@@ -86,6 +95,7 @@ public final class DnsForwardService extends Service {
         useIpv6 = intent.getBooleanExtra("ipv6", false);
         getSharedPreferences(PREFS, MODE_PRIVATE).edit().remove("ipv6_warning").apply();
         session = UUID.randomUUID().toString().replace("-", "");
+        starting=true;
         manager = new Thread(this::startNow, "DNS-manager");
         manager.start();
         return START_NOT_STICKY;
@@ -166,7 +176,7 @@ public final class DnsForwardService extends Service {
         } catch (Throwable failure) {
             writeState(false, "启动失败，已尝试回滚：" + brief(failure));
             stopNow();
-        }
+        } finally {starting=false;}
     }
 
     private void bindSockets() throws Exception {
@@ -436,6 +446,7 @@ public final class DnsForwardService extends Service {
                 .putLong("updated", System.currentTimeMillis()).apply();
     }
     @Override public void onDestroy() {
+        if(instance==this)instance=null;
         cancellationRequested = true;
         if (running || activated) new Thread(this::stopNow, "DNS-destroy-cleanup").start();
         super.onDestroy();

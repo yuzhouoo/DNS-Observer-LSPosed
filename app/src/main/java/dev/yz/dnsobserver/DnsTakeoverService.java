@@ -27,6 +27,8 @@ public final class DnsTakeoverService extends Service {
     private boolean fault4,fault6;
     // No retry of a session that never passed IPv6 startup and rule verification.
     private boolean ipv6EverActive,ipv6RepairBlocked;
+    private static volatile String uiPhase="idle";
+    public static String uiPhase(){return uiPhase;}
     private static final Object EVENTS_LOCK=new Object();
 
     public static void event(Context ctx,String message) {
@@ -75,7 +77,7 @@ public final class DnsTakeoverService extends Service {
     @Override public int onStartCommand(Intent intent,int flags,int startId){
         String action=intent==null?"":intent.getAction();
         if(ACTION_STOP.equals(action)){
-            stopped=true;
+            stopped=true;uiPhase="stopping";
             prefs().edit().putBoolean("takeover_enabled",false).commit();
             io.execute(this::stopAll);
             return START_NOT_STICKY;
@@ -83,10 +85,10 @@ public final class DnsTakeoverService extends Service {
         if(!ACTION_START.equals(action) && !prefs().getBoolean("takeover_enabled",false)) {
             stopSelf();return START_NOT_STICKY;
         }
-        try{foreground();}catch(Exception error){event(this,"无法启动前台服务："+error);stopSelf();return START_NOT_STICKY;}
+        try{foreground();}catch(Exception error){event(this,"无法启动前台服务："+error);uiPhase="idle";stopSelf();return START_NOT_STICKY;}
         stopped=false;
         if(!monitoring){
-            monitoring=true;
+            monitoring=true;uiPhase="starting";
             io.execute(this::startSelected);
         }
         return START_STICKY;
@@ -111,7 +113,7 @@ public final class DnsTakeoverService extends Service {
         expect6=p.getBoolean("takeover_ipv6",false);
         fault4=false;fault6=false;
         ipv6EverActive=false;ipv6RepairBlocked=false;
-        if(!expect4 && !expect6){status("没有勾选 IPv4/IPv6，未启动");stopSelf();return;}
+        if(!expect4 && !expect6){status("没有勾选 IPv4/IPv6，未启动");uiPhase="idle";stopSelf();return;}
         if(stopped || !p.getBoolean("takeover_enabled",false)){stopAll();return;}
         try {
             // Never depend on Android's system resolver for hostname bootstrap.
@@ -139,6 +141,7 @@ public final class DnsTakeoverService extends Service {
             }
             status("接管任务已按勾选协议提交；无自动到期关闭");
         }catch(Exception ex){status("启动失败："+ex.getClass().getSimpleName()+" "+ex.getMessage());}
+        if(!stopped)uiPhase="monitoring";
         Thread observer=new Thread(this::monitor,"DNS-takeover-observer");
         observer.setDaemon(true);observer.start();
     }
@@ -188,7 +191,7 @@ public final class DnsTakeoverService extends Service {
         }
     }
     private void stopAll(){
-        stopped=true;expect4=false;expect6=false;
+        uiPhase="stopping";stopped=true;expect4=false;expect6=false;
         ipv6EverActive=false;ipv6RepairBlocked=true;
         StringBuilder b=new StringBuilder("关闭接管：");
         try{startService(new Intent(this,DnsForwardService.class).setAction(DnsForwardService.ACTION_STOP));
@@ -209,9 +212,9 @@ public final class DnsTakeoverService extends Service {
         }
         boolean clean4=!DnsRootRules.active(this);
         status(b.toString()+" IPv4="+(clean4?"VERIFY_CLEAN":"VERIFY_FAILED")+"，IPv6="+(clean6?"VERIFY_CLEAN":"VERIFY_FAILED/请核对恢复日志"));
-        monitoring=false;
+        monitoring=false;uiPhase="idle";
         stopForeground(STOP_FOREGROUND_REMOVE);
         stopSelf();
     }
-    @Override public void onDestroy(){stopped=true;io.shutdownNow();super.onDestroy();}
+    @Override public void onDestroy(){stopped=true;uiPhase="idle";io.shutdownNow();super.onDestroy();}
 }

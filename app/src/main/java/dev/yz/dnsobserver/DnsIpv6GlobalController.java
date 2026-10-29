@@ -34,8 +34,8 @@ public final class DnsIpv6GlobalController {
     private static final String SCRIPT="dns-ipv6-global-v063.sh";
     private static final String PREF_LOG="ipv6_global_log";
     private static final String[] DOCS={"2001:db8:ffff::53","2001:db8:ffff::54"};
-    private static java.lang.Process process;
-    private static boolean starting,ownsRules,promoted;
+    private static volatile java.lang.Process process;
+    private static volatile boolean starting,ownsRules,promoted;
     private static String token;
     private static int rootPid;
     private static final LinkedBlockingQueue<String> signals=new LinkedBlockingQueue<>();
@@ -61,6 +61,10 @@ public final class DnsIpv6GlobalController {
             ctx.getSharedPreferences(DnsForwardService.PREFS,Context.MODE_PRIVATE)
                     .edit().remove(PREF_LOG).commit();
         }
+    }
+    public static boolean isStarting(){return starting;}
+    public static boolean isServing(){
+        java.lang.Process p=process;return promoted && p!=null && p.isAlive();
     }
     public static boolean isRunning(){
         synchronized(LOCK){return starting||(process!=null && process.isAlive());}

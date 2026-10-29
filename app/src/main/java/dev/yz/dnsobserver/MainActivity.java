@@ -59,7 +59,10 @@ public final class MainActivity extends Activity {
     private LinearLayout results;
     private EditText search;
     private Spinner statusSpinner;
-    private boolean active;
+    private Switch recordingSwitch;
+    private Button dnsControl,exportButton,clearButton;
+    private boolean active,clearDialogOpen;
+    private static volatile boolean exportBusy,clearBusy;
     private int filter;
 
     @Override protected void onCreate(Bundle stateBundle) {
@@ -99,34 +102,35 @@ public final class MainActivity extends Activity {
         overview.addView(note);
         main.addView(overview);
 
-        Button dnsControl = new Button(this);
+        dnsControl = new Button(this);
         dnsControl.setText("DNS 接管 · 主备 DNS · IP 历史");
         dnsControl.setTextSize(13);
         dnsControl.setAllCaps(false);
         dnsControl.setOnClickListener(v -> startActivity(
                 new Intent(this, DnsControlActivity.class)));
-        main.addView(dnsControl, new LinearLayout.LayoutParams(-1, dp(44)));
+        main.addView(dnsControl, new LinearLayout.LayoutParams(-1, -2));
 
         LinearLayout controls = new LinearLayout(this);
         controls.setGravity(Gravity.CENTER_VERTICAL);
         controls.setPadding(0, dp(10), 0, dp(6));
-        Switch running = new Switch(this);
-        running.setText("记录 DNS");
+        Switch running = recordingSwitch = new Switch(this);
+        running.setText(prefs.getBoolean("enabled",true)?"DNS 记录 · 已开启":"DNS 记录 · 已暂停");
         running.setTextColor(TEXT);
         running.setTextSize(14);
         running.setChecked(prefs.getBoolean("enabled", true));
         running.setOnCheckedChangeListener((b, checked) -> {
             prefs.edit().putBoolean("enabled", checked).apply();
-            toast(checked ? "已恢复记录" : "已暂停记录（Hook 仍保留）");
+            running.setText(checked?"DNS 记录 · 已开启":"DNS 记录 · 已暂停");
+            toast(checked ? "已恢复记录；系统端连接状态见上方" : "已暂停记录（Hook 仍保留）");
             requestRefresh();
         });
-        controls.addView(running, new LinearLayout.LayoutParams(0, dp(42), 1));
-        Button export = action("导出 CSV");
+        controls.addView(running, new LinearLayout.LayoutParams(0, -2, 1));
+        Button export = exportButton = action("导出 CSV");
         export.setOnClickListener(v -> exportFile());
         controls.addView(export);
-        Button clear = action("清空");
+        Button clear = clearButton = action("清空记录");
         clear.setOnClickListener(v -> confirmClear());
-        controls.addView(clear);
+        controls.addView(clear);exportButton.setEnabled(false);clearButton.setEnabled(false);
         main.addView(controls);
 
         LinearLayout filters = new LinearLayout(this);
@@ -139,7 +143,7 @@ public final class MainActivity extends Activity {
         search.setHint("域名 / 应用 / 包名 / IP / DNS 服务器");
         search.setPadding(dp(12), dp(5), dp(7), dp(5));
         search.setBackground(bg(PANEL, dp(11)));
-        filters.addView(search, new LinearLayout.LayoutParams(0, dp(42), 1));
+        filters.addView(search, new LinearLayout.LayoutParams(0, -2, 1));
         statusSpinner = new Spinner(this);
         ArrayAdapter<String> adapter = new ArrayAdapter<>(this,
                 android.R.layout.simple_spinner_item, new String[]{"全部", "成功", "失败"});
@@ -192,9 +196,9 @@ public final class MainActivity extends Activity {
         b.setAllCaps(false);
         b.setMinWidth(0);
         b.setMinimumWidth(0);
-        b.setPadding(dp(5), 0, dp(5), 0);
+        b.setPadding(dp(5), dp(7), dp(5), dp(7));b.setMinHeight(dp(46));
         b.setBackground(bg(PANEL, dp(9)));
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(78), dp(39));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(78), -2);
         lp.leftMargin = dp(5);
         b.setLayoutParams(lp);
         return b;
@@ -261,6 +265,15 @@ public final class MainActivity extends Activity {
                             "  ·  失败 " + summary.failures);
                     long hb = prefs.getLong("heartbeat", 0L);
                     boolean live = hb > 0 && System.currentTimeMillis() - hb < 25000L;
+                    boolean recording=prefs.getBoolean("enabled",true);
+                    recordingSwitch.setText(!recording?"DNS 记录 · 已暂停":live?"DNS 记录 · 记录中":"DNS 记录 · 等待系统端");
+                    String takeoverPhase=DnsTakeoverService.uiPhase();
+                    String takeoverSummary="starting".equals(takeoverPhase)?"正在开启":
+                        "stopping".equals(takeoverPhase)?"正在关闭":
+                        DnsForwardService.isServing()||DnsIpv6GlobalController.isServing()?"代理运行中 · 查看校验状态":
+                        getSharedPreferences(DnsForwardService.PREFS,MODE_PRIVATE).getBoolean("takeover_enabled",false)?"已请求 · 状态待确认":"未请求 · 查看实时状态";
+                    dnsControl.setText("DNS 接管 · "+takeoverSummary);
+                    setDataButtons(summary.total);
                     state.setText(live ? "● 系统端心跳正常"
                             : providerReady ? "○ 系统端无心跳（App 存储通道正常）"
                             : "○ 系统端无心跳（App 存储通道异常）");
@@ -353,39 +366,57 @@ public final class MainActivity extends Activity {
     }
 
     private static String safe(String s) {return s==null||s.isEmpty()?"未知":s;}
+    private void setDataButtons(long count) {
+        exportButton.setEnabled(!exportBusy&&!clearBusy&&count>0);
+        clearButton.setEnabled(!exportBusy&&!clearBusy&&count>0);
+        exportButton.setText(exportBusy?"正在导出…":count==0?"暂无记录":"导出 CSV");
+        clearButton.setText(clearBusy?"正在清空…":count==0?"记录为空":"清空记录");
+        exportButton.setAlpha(exportButton.isEnabled()?1f:0.45f);
+        clearButton.setAlpha(clearButton.isEnabled()?1f:0.45f);
+    }
     private void confirmClear() {
-        new AlertDialog.Builder(this)
+        if(clearBusy||exportBusy||clearDialogOpen)return;
+        clearDialogOpen=true;
+        AlertDialog dialog=new AlertDialog.Builder(this)
                 .setTitle("清空全部解析记录？")
                 .setMessage("此操作不可撤销，导出前请确认。")
                 .setNegativeButton("取消", null)
-                .setPositiveButton("清空", (dialog, which) -> io.execute(() -> {
+                .setPositiveButton("清空", (dialog, which) -> {
+                    if(clearBusy||exportBusy)return;
+                    clearBusy=true;setDataButtons(1);
+                    io.execute(() -> {
                     try {
                         database.clearAll();
-                        ui.post(() -> { toast("记录已清空"); requestRefresh(); });
-                    } catch (Throwable t) { ui.post(() -> toast("清空失败")); }
-                })).show();
+                        ui.post(() -> {clearBusy=false;setDataButtons(0);toast("记录已清空"); requestRefresh(); });
+                    } catch (Throwable t) { ui.post(() -> {clearBusy=false;setDataButtons(1);toast("清空失败");requestRefresh();}); }
+                });}).create();
+        dialog.setOnDismissListener(d->clearDialogOpen=false);dialog.show();
     }
 
     private void exportFile() {
+        if(exportBusy||clearBusy)return;
+        exportBusy=true;setDataButtons(1);
         Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.setType("text/csv");
         intent.putExtra(Intent.EXTRA_TITLE,
                 "dns-observer-" + new SimpleDateFormat("yyyyMMdd-HHmm", Locale.US)
                         .format(new Date()) + ".csv");
-        startActivityForResult(intent, REQ_EXPORT);
+        try{startActivityForResult(intent, REQ_EXPORT);}
+        catch(Exception error){exportBusy=false;setDataButtons(1);toast("无法打开保存位置");}
     }
     @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode != REQ_EXPORT || resultCode != RESULT_OK || data == null) return;
+        if (requestCode != REQ_EXPORT)return;
+        if(resultCode != RESULT_OK || data == null){exportBusy=false;setDataButtons(1);requestRefresh();return;}
         Uri selected = data.getData();
-        if (selected == null) return;
+        if (selected == null){exportBusy=false;setDataButtons(1);requestRefresh();return;}
         io.execute(() -> {
             try (OutputStream output = getContentResolver().openOutputStream(selected, "w")) {
                 if (output == null) throw new IllegalStateException("file stream unavailable");
                 database.exportAll(output);
-                ui.post(() -> toast("CSV 导出完成"));
-            } catch (Throwable t) { ui.post(() -> toast("CSV 导出失败: " + t.getClass().getSimpleName())); }
+                ui.post(() -> {exportBusy=false;setDataButtons(1);toast("CSV 导出完成");requestRefresh();});
+            } catch (Throwable t) { ui.post(() -> {exportBusy=false;setDataButtons(1);toast("CSV 导出失败: " + t.getClass().getSimpleName());requestRefresh();}); }
         });
     }
     @Override protected void onDestroy() {

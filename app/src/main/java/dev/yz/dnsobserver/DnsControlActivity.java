@@ -35,12 +35,21 @@ public final class DnsControlActivity extends Activity {
     private EditText host, port, bootstrap, subHost, subPort, secondaryHost, secondaryPort;
     private TextView history;
     private LinearLayout speedResults;
-    private volatile boolean measuring;
+    private static volatile boolean measuring;
+    private static volatile String speedMessage="测速：未开始";
     private TextView status, ipv6PilotLog, ipv6GlobalLog, takeoverEvents;
     private CheckBox takeIpv4, takeIpv6;
     private Switch repairSwitch, bootSwitch, systemIpv6;
     private TextView ipv6Result;
-    private boolean ipv6Busy;
+    private static volatile boolean ipv6Busy;
+    private boolean checkingFeatures, ruleBusy;
+    private Button startButton,stopButton,speedButton,ruleButton,ipv6Refresh,featureRefresh;
+    private TextView featureOverview,selectionHint,speedStatus,featureStamp;
+    private DnsUiSnapshot snapshot;
+    private long checkedAt,pendingAt;
+    private int snapshotVersion;
+    private String pendingPhase="";
+    private boolean startDialogOpen;
     private ScrollView historyScroll;
     private Button speedHistoryToggle;
     private boolean historyExpanded;
@@ -123,28 +132,118 @@ public final class DnsControlActivity extends Activity {
     }
 
 
+    private String phase() {
+        String actual=DnsTakeoverService.uiPhase();
+        if(!"idle".equals(actual)){pendingPhase="";return actual;}
+        if(!pendingPhase.isEmpty() && android.os.SystemClock.elapsedRealtime()-pendingAt<5000)return pendingPhase;
+        pendingPhase="";return actual;
+    }
+    private void setPending(String value) {
+        pendingPhase=value;pendingAt=android.os.SystemClock.elapsedRealtime();
+        snapshotVersion++;checkedAt=0;renderFeatureStates();
+    }
     private void showIpv6State(String value) {
         systemIpv6.setOnCheckedChangeListener(null);
         systemIpv6.setChecked(value.startsWith("IPV6_DISABLED\n") || value.equals("IPV6_DISABLED"));
         systemIpv6.setOnCheckedChangeListener((b,on)->toggleIpv6FromUi(systemIpv6,ipv6Result,on));
     }
-    private void refreshIpv6State() {
-        if(ipv6Busy || systemIpv6==null)return;
-        ipv6Busy=true;systemIpv6.setEnabled(false);
+    private void refreshIpv6State() { refreshFeatureStates(); }
+    private void refreshFeatureStates() {
+        renderFeatureStates();
+        String current=phase();
+        if(checkingFeatures || ipv6Busy || "starting".equals(current)||"stopping".equals(current))return;
+        checkingFeatures=true;renderFeatureStates();
+        final int version=snapshotVersion;
         new Thread(()->{
-            String message;boolean success=false;
-            try {message=Ipv6SystemToggle.status(getApplicationContext());success=true;}
-            catch(Exception error){message="内核状态未知："+error;}
-            final String output=message;final boolean ok=success;
+            DnsUiSnapshot value=DnsUiSnapshot.read(getApplicationContext());
             ui.post(()->{
-                if(ok)showIpv6State(output);
-                ipv6Result.setText(output);systemIpv6.setEnabled(true);ipv6Busy=false;
+                checkingFeatures=false;
+                if(isFinishing()||isDestroyed())return;
+                if(version==snapshotVersion){snapshot=value;checkedAt=android.os.SystemClock.elapsedRealtime();}
+                renderFeatureStates();
             });
-        },"IPv6-system-status").start();
+        },"DNS-feature-status").start();
+    }
+    private void paint(Button button,String title,boolean enabled,boolean danger) {
+        if(button==null)return;
+        button.setText(title);button.setEnabled(enabled);button.setAlpha(enabled?1f:0.45f);
+        button.setBackground(surface(danger?Color.rgb(111,43,53):Color.rgb(34,57,80),10));
+    }
+    private void renderFeatureStates() {
+        if(featureOverview==null)return;
+        if(speedStatus!=null)speedStatus.setText(speedMessage);
+        String current=phase();
+        boolean requested=prefs.getBoolean("takeover_enabled",false);
+        boolean fresh=snapshot!=null && checkedAt>0 && android.os.SystemClock.elapsedRealtime()-checkedAt<20000;
+        String system=fresh?snapshot.system:"unknown";
+        boolean selected4=prefs.getBoolean("takeover_ipv4",true),selected6=prefs.getBoolean("takeover_ipv6",false);
+        DnsFeatureState v4=DnsFeatureState.resolve(!"stopping".equals(current)&&DnsForwardService.isStarting()?"starting":current,selected4,requested,
+            fresh&&!"unknown".equals(snapshot.v4),fresh&&"present".equals(snapshot.v4),fresh&&snapshot.active4);
+        DnsFeatureState v6=DnsFeatureState.resolve(!"stopping".equals(current)&&DnsIpv6GlobalController.isStarting()?"starting":current,selected6,requested,
+            fresh&&!"unknown".equals(snapshot.v6),fresh&&"present".equals(snapshot.v6),fresh&&snapshot.active6);
+        SharedPreferences record=getSharedPreferences(SecureProvider.PREFS,MODE_PRIVATE);
+        boolean enabled=record.getBoolean("enabled",true);
+        long hb=record.getLong("heartbeat",0);
+        boolean live=hb>0 && System.currentTimeMillis()-hb<25000;
+        String records=!enabled?"已暂停":live?"记录中":"已开启，系统端未连接";
+        String systemLabel=ipv6Busy?"正在应用并校验":
+            "disabled".equals(system)?"已禁用 · 仅 IPv4":
+            "enabled".equals(system)?"未禁用 · 接口允许 IPv6":
+            "mixed".equals(system)?"部分接口禁用 · 非全局禁用":"待确认 · 请刷新状态";
+        featureOverview.setText("DNS 记录："+records+"\nIPv4 DNS 接管："+v4.label+
+            "\nIPv6 DNS 接管："+v6.label+"\n系统 IPv6："+systemLabel+
+            "\n自动重新接管："+(repairSwitch!=null&&repairSwitch.isChecked()?"已开启":"已关闭")+
+            "\n开机自动接管："+(bootSwitch!=null&&bootSwitch.isChecked()?(requested?"已开启，等待下次开机":"已开启；手动关闭后不自动启动"):"已关闭"));
+        featureOverview.setTextColor(v4==DnsFeatureState.ERROR||v6==DnsFeatureState.ERROR?Color.rgb(255,170,112):FG);
+        String stamp=checkedAt==0?"尚未完成本次状态校验":
+            "最近校验："+new java.text.SimpleDateFormat("HH:mm:ss",java.util.Locale.getDefault()).format(
+                new java.util.Date(System.currentTimeMillis()-(android.os.SystemClock.elapsedRealtime()-checkedAt)));
+        featureStamp.setText((checkingFeatures?"正在核对内核与代理… · ":"")+stamp+
+            (fresh&&!snapshot.error.isEmpty()?"\n"+snapshot.error:"")+(!fresh&&checkedAt>0?" · 结果已过期":""));
+        boolean lifecycleBusy="starting".equals(current)||"stopping".equals(current);
+        boolean session=requested || !"idle".equals(current) || (fresh&&(snapshot.active4||snapshot.active6));
+        boolean lockConfig=session||lifecycleBusy||ipv6Busy||measuring;
+        for(EditText field:new EditText[]{host,port,bootstrap,subHost,subPort,secondaryHost,secondaryPort})
+            if(field!=null){field.setEnabled(!lockConfig);field.setAlpha(lockConfig?0.55f:1f);}
+        if(takeIpv4!=null){takeIpv4.setEnabled(!lockConfig);takeIpv6.setEnabled(!lockConfig);}
+        String selected=takeIpv4==null?"":(takeIpv4.isChecked()?"IPv4 ":"")+(takeIpv6.isChecked()?"IPv6":"");
+        if(selectionHint!=null)selectionHint.setText(session?"接管会话运行中：请先关闭接管，再修改 DNS 和协议配置。":
+            "下次启动配置："+(selected.isEmpty()?"未选择协议":selected)+"。勾选不会立即开启接管。");
+        boolean configReady=false;String configError="";
+        if(takeIpv4!=null)try{checkedHost();checkedPort();configReady=true;}
+        catch(Exception error){configError=error.getMessage();}
+        if(!session && selectionHint!=null && !configReady)selectionHint.append("\n配置待完善："+configError);
+        boolean canStart=takeIpv4!=null&&DnsFeatureState.mayStart(requested,current,ipv6Busy||measuring||checkingFeatures,
+            configReady,takeIpv4.isChecked(),takeIpv6.isChecked(),v4,v6,system);
+        String startTitle="starting".equals(current)?"正在开启接管…":
+            "stopping".equals(current)?"正在关闭，请稍候…":session?"接管会话已请求 · 查看各协议校验状态":
+            checkingFeatures?"正在核对状态…":!fresh?"请先刷新状态":
+            v4!=DnsFeatureState.OFF||v6!=DnsFeatureState.OFF?"状态异常或未确认 · 请先检查 / 清理":
+            takeIpv6!=null&&takeIpv6.isChecked()&&("disabled".equals(system)||"unknown".equals(system))?"请先恢复系统 IPv6，再启用 IPv6 接管":
+            !configReady?"请完善 DNS / 端口 / Bootstrap 配置":selected.isEmpty()?"请先选择接管协议":"开启所选 DNS 接管";
+        paint(startButton,startTitle,canStart,false);
+        boolean clean=fresh&&v4==DnsFeatureState.OFF&&v6==DnsFeatureState.OFF&&!session;
+        paint(stopButton,"stopping".equals(current)?"正在关闭并校验清理结果…":
+            clean?"接管已关闭 · 无需清理":session?"关闭全部 DNS 接管":"检查并清理残留接管",!clean&&!"stopping".equals(current)&&!ipv6Busy,true);
+        boolean v6Conflict=takeIpv6!=null && (session&&selected6 || fresh&&"present".equals(snapshot.v6));
+        systemIpv6.setEnabled(fresh&&!"unknown".equals(system)&&!checkingFeatures&&!ipv6Busy&&!lifecycleBusy&&!measuring&&!v6Conflict);
+        if(!ipv6Busy){
+            systemIpv6.setOnCheckedChangeListener(null);systemIpv6.setChecked("disabled".equals(system));
+            systemIpv6.setOnCheckedChangeListener((b,on)->toggleIpv6FromUi(systemIpv6,ipv6Result,on));
+        }
+        systemIpv6.setText(ipv6Busy?"系统 IPv6 · 处理中…":v6Conflict?"禁用 IPv6 · 请先关闭 IPv6 接管":
+            "disabled".equals(system)?"禁用 IPv6 · 已开启（仅 IPv4）":"禁用 IPv6 · "+("unknown".equals(system)?"待确认":"未开启"));
+        paint(ipv6Refresh,checkingFeatures?"正在核对 IPv6 状态…":"刷新 IPv6 内核状态",!checkingFeatures&&!ipv6Busy&&!lifecycleBusy,false);
+        paint(featureRefresh,checkingFeatures?"正在刷新所有功能状态…":"刷新所有功能状态",!checkingFeatures&&!ipv6Busy&&!lifecycleBusy,false);
+        paint(speedButton,measuring?"正在测速… · 请等待结果":"开始主 / 从 / 备测速",!measuring&&!ipv6Busy&&!lifecycleBusy,false);
+        paint(ruleButton,ruleBusy?"正在读取 IPv6 规则…":"查看 IPv6 规则详情",!ruleBusy&&!ipv6Busy&&!lifecycleBusy,false);
+        if(repairSwitch!=null)repairSwitch.setText("自动重新接管 · "+(repairSwitch.isChecked()?"已开启":"已关闭"));
+        if(bootSwitch!=null)bootSwitch.setText("开机自动接管 · "+(bootSwitch.isChecked()?"已开启":"已关闭"));
     }
     private void toggleIpv6FromUi(Switch control,TextView result,boolean disable) {
         if(ipv6Busy)return;
-        ipv6Busy=true;control.setEnabled(false);result.setText("正在通过 Root 应用并验证…");
+        ipv6Busy=true;snapshotVersion++;checkedAt=0;
+        result.setText("正在通过 Root 应用并验证…");renderFeatureStates();
         new Thread(()->{
             String message;
             try {message=Ipv6SystemToggle.set(getApplicationContext(),disable);}
@@ -154,9 +253,11 @@ public final class DnsControlActivity extends Activity {
             catch(Exception error){message+="\n内核状态未知："+error;}
             final String output=message;final String verified=actual;
             ui.post(()->{
+                ipv6Busy=false;
+                if(isFinishing()||isDestroyed())return;
                 if(verified!=null)showIpv6State(verified);
                 result.setText(output+(verified==null?"":"\n当前内核状态：\n"+verified));
-                control.setEnabled(true);ipv6Busy=false;
+                ipv6Busy=false;refreshFeatureStates();
             });
         },"IPv6-system-toggle").start();
     }
@@ -191,8 +292,8 @@ public final class DnsControlActivity extends Activity {
     private Button button(String title, LinearLayout root) {
         Button b=new Button(this);
         b.setText(title);b.setAllCaps(false);b.setTextSize(14);b.setTextColor(FG);
-        b.setBackground(surface(Color.rgb(34,57,80),10));
-        LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,dp(46));
+        b.setBackground(surface(Color.rgb(34,57,80),10));b.setMinHeight(dp(48));b.setPadding(dp(10),dp(8),dp(10),dp(8));
+        LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);
         lp.bottomMargin=dp(7);root.addView(b,lp);
         return b;
     }
@@ -203,7 +304,12 @@ public final class DnsControlActivity extends Activity {
         setContentView(scroll);
         root.addView(label("DNS Observer · v"+BuildConfig.VERSION_NAME,23,FG));
         root.addView(label("IPv4 NAT / IPv6 TPROXY 独立选择 · 启用后不定时关闭 · Bootstrap-only",12,SECOND));
-        status=selectable(label("正在检查接管状态…",14,FG));
+        featureOverview=selectable(label("正在核对各功能状态…",15,FG));
+        logArea(root,featureOverview,210);
+        featureStamp=label("尚未完成状态校验",12,SECOND);root.addView(featureStamp);
+        featureRefresh=button("刷新所有功能状态",root);featureRefresh.setOnClickListener(v->refreshFeatureStates());
+        root.addView(label("最近操作与接管事件",14,SECOND));
+        status=selectable(label("暂无操作",14,FG));
         logArea(root,status,96);
         button("复制当前接管状态",root).setOnClickListener(v->copyVisibleText(status,"接管状态"));
 
@@ -216,7 +322,7 @@ public final class DnsControlActivity extends Activity {
         ipv6Result=selectable(label("正在读取内核状态…",12,SECOND));
         root.addView(ipv6Result);
         systemIpv6.setOnCheckedChangeListener((b,disable)->toggleIpv6FromUi(systemIpv6,ipv6Result,disable));
-        button("刷新 IPv6 内核状态",root).setOnClickListener(v->refreshIpv6State());
+        ipv6Refresh=button("刷新 IPv6 内核状态",root);ipv6Refresh.setOnClickListener(v->refreshIpv6State());
         host=field(root,"主 DNS 域名（不带协议、端口）",prefs.getString("host",""));
         port=field(root,"主 DNS 端口",prefs.getString("port","31017"));
         port.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
@@ -227,42 +333,59 @@ public final class DnsControlActivity extends Activity {
         secondaryPort=field(root,"备 DNS 端口",prefs.getString("secondary_port","31017"));
         secondaryPort.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
         bootstrap=field(root,"Bootstrap DNS 纯 IP（域名刷新使用，可留空）",prefs.getString("bootstrap",""));
-        root.addView(label("接管协议",18,FG));
+        root.addView(label("下次启动的接管协议",18,FG));
+        selectionHint=label("勾选仅配置下次启动，不代表已开启",12,SECOND);root.addView(selectionHint);
         LinearLayout types=new LinearLayout(this);types.setOrientation(LinearLayout.HORIZONTAL);
         takeIpv4=new CheckBox(this);takeIpv4.setText("IPv4");takeIpv4.setTextColor(FG);
         takeIpv4.setChecked(prefs.getBoolean("takeover_ipv4",true));
         takeIpv6=new CheckBox(this);takeIpv6.setText("IPv6");takeIpv6.setTextColor(FG);
         takeIpv6.setChecked(prefs.getBoolean("takeover_ipv6",false));
+        takeIpv4.setOnCheckedChangeListener((b,on)->renderFeatureStates());
+        takeIpv6.setOnCheckedChangeListener((b,on)->renderFeatureStates());
         types.addView(takeIpv4,new LinearLayout.LayoutParams(0,dp(48),1));
         types.addView(takeIpv6,new LinearLayout.LayoutParams(0,dp(48),1));root.addView(types);
         repairSwitch=new Switch(this);repairSwitch.setText("被系统覆盖后自动重新接管");
         repairSwitch.setTextColor(FG);repairSwitch.setChecked(prefs.getBoolean("takeover_auto_repair",false));
         root.addView(repairSwitch);
         repairSwitch.setOnCheckedChangeListener((b,on)->
-            prefs.edit().putBoolean("takeover_auto_repair",on).apply());
+            {prefs.edit().putBoolean("takeover_auto_repair",on).apply();renderFeatureStates();});
         bootSwitch=new Switch(this);bootSwitch.setText("开机自动启动（仅上次保持接管开启时）");
         bootSwitch.setTextColor(FG);bootSwitch.setChecked(prefs.getBoolean("takeover_boot",false));
         root.addView(bootSwitch);
         bootSwitch.setOnCheckedChangeListener((b,on)->
-            prefs.edit().putBoolean("takeover_boot",on).apply());
+            {prefs.edit().putBoolean("takeover_boot",on).apply();renderFeatureStates();});
         root.addView(label("无定时恢复：手动关闭会强制清理 IPv4 和 IPv6（忽略勾选）。异常进程退出仍执行安全清理；覆盖自动重新接管仅在开关打开时执行。",12,SECOND));
-        button("开启所选 IPv4 / IPv6 DNS 接管",root).setOnClickListener(v->
-            new AlertDialog.Builder(this).setTitle("启动所选 DNS 接管？")
-             .setMessage("启用后无固定到期时间。请确认 Bootstrap 纯 IP、Root 权限及紧急恢复方式；开启 IPv6 将影响普通非 Root UID 的 DNS53。")
-             .setNegativeButton("取消",null).setPositiveButton("开启",(d,w)->startProxy()).show());
-        button("关闭接管 · 强制清除 IPv4 / IPv6 所有规则",root).setOnClickListener(v->{
-            DnsTakeoverService.requestStop(this);
-            status.setText("已提交统一强制关闭，正在核对 IPv4/IPv6 规则…");
+        startButton=button("正在核对接管状态…",root);startButton.setEnabled(false);
+        startButton.setOnClickListener(v->{
+            if(startDialogOpen || !startButton.isEnabled())return;
+            startDialogOpen=true;
+            AlertDialog dialog=new AlertDialog.Builder(this).setTitle("开启所选 DNS 接管？")
+             .setMessage("本次将启用："+(takeIpv4.isChecked()?"IPv4 ":"")+(takeIpv6.isChecked()?"IPv6":"")+
+                "。保持运行直到手动关闭；以页面上各协议的校验状态为准。")
+             .setNegativeButton("取消",null).setPositiveButton("开启",(d,w)->startProxy()).create();
+            dialog.setOnDismissListener(d->startDialogOpen=false);dialog.show();
+        });
+        stopButton=button("检查并清理残留接管",root);
+        stopButton.setOnClickListener(v->{
+            try {
+                setPending("stopping");DnsTakeoverService.requestStop(this);
+                status.setText("已提交统一强制关闭，正在核对 IPv4/IPv6 规则…");
+            }catch(Exception error){pendingPhase="";status.setText("提交关闭失败："+error.getMessage());refreshFeatureStates();}
         });
         root.addView(label("覆盖检测及自动修复日志",17,FG));
         takeoverEvents=selectable(label("",12,FG));logArea(root,takeoverEvents,145);
         button("复制覆盖检测记录",root).setOnClickListener(v->copyText(DnsTakeoverService.events(this),"接管覆盖事件"));
         button("清空覆盖检测记录",root).setOnClickListener(v->{
-            DnsTakeoverService.clearEvents(this);takeoverEvents.setText("暂无覆盖记录");
+            new AlertDialog.Builder(this).setTitle("清空覆盖检测记录？").setMessage("仅清空日志，不关闭接管。")
+                .setNegativeButton("取消",null).setPositiveButton("清空",(d,w)->{
+                    DnsTakeoverService.clearEvents(this);takeoverEvents.setText("暂无覆盖记录");
+                    Toast.makeText(this,"覆盖检测记录已清空",Toast.LENGTH_SHORT).show();
+                }).show();
         });
         root.addView(label("主 / 从 / 备 · 引导解析和 UDP/TCP 诊断",17,FG));
         root.addView(label("所有主/从/备域名必须通过填写的 Bootstrap 纯 IP 查询，不再优先使用系统 DNS。",12,SECOND));
-        button("开始主 / 从 / 备：Ping + UDP/TCP DNS 测速",root).setOnClickListener(v->testServer());
+        speedStatus=label("测速：未开始",12,SECOND);root.addView(speedStatus);
+        speedButton=button("开始主 / 从 / 备测速",root);speedButton.setOnClickListener(v->testServer());
         speedResults=new LinearLayout(this);speedResults.setOrientation(LinearLayout.VERTICAL);
         ScrollView speedScroll=new ScrollView(this);speedScroll.setNestedScrollingEnabled(true);
         speedScroll.setBackground(surface(Color.rgb(20,32,51),12));
@@ -272,11 +395,26 @@ public final class DnsControlActivity extends Activity {
         ipv6GlobalLog=selectable(label("",12,FG));logArea(root,ipv6GlobalLog,155);
         refreshGlobalPreview();
         button("复制 IPv6 全部日志",root).setOnClickListener(v->copyText(DnsIpv6GlobalController.report(this),"IPv6 日志"));
-        button("清空 IPv6 日志",root).setOnClickListener(v->{DnsIpv6GlobalController.clearLog(this);refreshGlobalPreview();});
-        button("查看 IPv6 规则状态",root).setOnClickListener(v->new Thread(()->{
-            String result=DnsIpv6GlobalController.status(getApplicationContext());
-            ui.post(()->status.setText(result));
-        },"DNS-IPv6-status").start());
+        button("清空 IPv6 日志",root).setOnClickListener(v->new AlertDialog.Builder(this)
+            .setTitle("清空 IPv6 日志？").setMessage("仅清空日志，不关闭 IPv6 接管。")
+            .setNegativeButton("取消",null).setPositiveButton("清空",(d,w)->{
+                DnsIpv6GlobalController.clearLog(this);refreshGlobalPreview();
+                Toast.makeText(this,"IPv6 日志已清空",Toast.LENGTH_SHORT).show();
+            }).show());
+        ruleButton=button("查看 IPv6 规则详情",root);
+        ruleButton.setOnClickListener(v->{
+            if(ruleBusy)return;ruleBusy=true;renderFeatureStates();
+            new Thread(()->{
+                String value=DnsIpv6GlobalController.status(getApplicationContext());
+                ui.post(()->{
+                    ruleBusy=false;if(isFinishing()||isDestroyed())return;renderFeatureStates();
+                    ScrollView box=new ScrollView(this);TextView detail=selectable(label(value,12,FG));
+                    detail.setPadding(dp(14),dp(12),dp(14),dp(12));box.addView(detail);
+                    new AlertDialog.Builder(this).setTitle("IPv6 规则详情").setView(box)
+                        .setNeutralButton("复制",(d,w)->copyText(value,"IPv6 规则详情")).setPositiveButton("关闭",null).show();
+                });
+            },"DNS-IPv6-status").start();
+        });
         root.addView(label("DNS 测速与 IP 变化历史",17,FG));
         speedHistoryToggle=button("展开最近测速历史",root);
         history=selectable(label("正在加载历史…",12,SECOND));
@@ -288,7 +426,13 @@ public final class DnsControlActivity extends Activity {
             if(historyExpanded)refreshHistory();
         });
         button("复制当前测速历史",root).setOnClickListener(v->copyVisibleText(history,"DNS 测速历史"));
-        root.addView(label("高级诊断留存在底层代码；主页面已移除重复实验及冗余按钮。",12,SECOND));
+        android.text.TextWatcher watcher=new android.text.TextWatcher(){
+            public void beforeTextChanged(CharSequence t,int st,int count,int after){}
+            public void onTextChanged(CharSequence t,int st,int before,int count){renderFeatureStates();}
+            public void afterTextChanged(android.text.Editable e){}
+        };
+        for(EditText field:new EditText[]{host,port,bootstrap,subHost,subPort,secondaryHost,secondaryPort})field.addTextChangedListener(watcher);
+        renderFeatureStates();
     }
     private void persist() {
         prefs.edit().putString("host",host.getText().toString().trim())
@@ -347,17 +491,21 @@ public final class DnsControlActivity extends Activity {
             checkedHost();checkedPort();
             if(!takeIpv4.isChecked()&&!takeIpv6.isChecked())
                 throw new IllegalArgumentException("请至少勾选 IPv4 或 IPv6");
+            if(takeIpv6.isChecked() && (snapshot==null || "disabled".equals(snapshot.system) || "unknown".equals(snapshot.system)))
+                throw new IllegalArgumentException("请先恢复系统 IPv6，并刷新状态");
             persist();
+            setPending("starting");
             prefs.edit().putBoolean("takeover_enabled",true).commit();
             DnsTakeoverService.requestStart(this);
             status.setText("已提交接管启动，正在按勾选类型预检与安装规则…");
         } catch(Exception e){
             prefs.edit().putBoolean("takeover_enabled",false).commit();
-            status.setText("配置或启动错误："+e.getMessage());
+            pendingPhase="";status.setText("配置或启动错误："+e.getMessage());
+            refreshFeatureStates();
         }
     }
     private void testServer() {
-        if(measuring){status.setText("正在进行测速，请勿重复提交");return;}
+        if(measuring)return;
         final String[] domains=new String[3];
         final int[] ports=new int[3];
         final String bootstrapIp;
@@ -375,11 +523,12 @@ public final class DnsControlActivity extends Activity {
                     throw new IllegalArgumentException("接管中且未配置 Bootstrap；"+DnsFailover.NAMES[role]+" DNS 没有缓存 IP，请先停用接管再测速");
             }
             persist();
-        } catch(Exception e){status.setText("测速配置错误："+e.getMessage());return;}
-        measuring=true;
-        status.setText("正在进行 IPv4/IPv6：ICMP Ping、UDP DNS、TCP DNS 分项检测…");
+        } catch(Exception e){speedMessage="测速：配置错误 · "+e.getMessage();speedStatus.setText(speedMessage);return;}
+        measuring=true;renderFeatureStates();
+        speedMessage="测速：进行中 · Ping / UDP DNS / TCP DNS，请稍候…";speedStatus.setText(speedMessage);
         new Thread(()->{
             UpstreamMonitor.Result[] results=new UpstreamMonitor.Result[3];
+            String failure=null;
             try {
                 for(int role=0;role<3;role++) {
                     if(domains[role].isEmpty())continue;
@@ -388,12 +537,15 @@ public final class DnsControlActivity extends Activity {
                 }
             } catch(Throwable t) {
                 android.util.Log.e("DNSObserver","DNS speed test unexpected failure",t);
+                failure=t.getClass().getSimpleName();
             }
+            final String error=failure;
             ui.post(()->{
-                measuring=false;
+                measuring=false;speedMessage=error==null?"测速：已完成 · 各 IP 成败见下方诊断 / 历史":"测速：异常终止 · "+error;
                 if(isFinishing()||isDestroyed())return;
                 renderSpeeds(domains,ports,results);
-                status.setText("Ping / UDP DNS / TCP DNS 测速结束；详细诊断及历史已保存");
+                speedStatus.setText(speedMessage);
+                renderFeatureStates();
                 refreshHistory();
             });
         },"DNS-speed-test").start();
@@ -491,7 +643,7 @@ public final class DnsControlActivity extends Activity {
         long at=p.getLong("updated",0);
         String report=p.getString("takeover_status","");
         if(!report.isEmpty()){
-            String current=(p.getBoolean("takeover_enabled",false)?"● 接管已请求：":"○ 接管已关闭：")+report;
+            String current="最近接管事件："+report;
             if(!current.equals(status.getText().toString()))status.setText(current);
         }
         if(historyExpanded && history!=null && System.currentTimeMillis()-historyUpdated>15000) {
@@ -503,7 +655,8 @@ public final class DnsControlActivity extends Activity {
                 takeoverEvents.setText(value.isEmpty()?"暂无覆盖记录":value);
         }
         refreshGlobalPreview();
-        ui.postDelayed(this,3500);
+        refreshFeatureStates();
+        ui.postDelayed(this,5000);
     }};
     @Override protected void onResume(){super.onResume();visible=true;refreshIpv6State();ui.removeCallbacks(refresh);ui.postDelayed(refresh,1200);}
     @Override protected void onPause(){visible=false;ui.removeCallbacks(refresh);super.onPause();}
