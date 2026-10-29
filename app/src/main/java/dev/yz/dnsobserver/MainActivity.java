@@ -79,7 +79,7 @@ public final class MainActivity extends Activity {
         screen.setBackground(TechUi.backdrop());screen.addView(main,new ScrollView.LayoutParams(-1,-2));
         setContentView(screen);TechUi.safeScreen(this,screen);
 
-        TextView title = text("DNS Observer", 28, TEXT, true);
+        TextView title = text(getString(R.string.app_name), 28, TEXT, true);
         title.setLetterSpacing(0.035f);
         main.addView(title);
         TextView subtitle = text("系统 DNS 观察 · LSPosed API 102 · v"+BuildConfig.VERSION_NAME, 12, MUTED, false);

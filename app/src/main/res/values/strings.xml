@@ -1,1 +1,4 @@
-<resources><string name="module_description">全局监测 Android 系统 DNS 解析事件、结果、UID、延迟和失败信息</string></resources>
+<resources>
+    <string name="app_name">域瞳</string>
+    <string name="module_description">域瞳 DNS Observer：观察系统 DNS 解析、独立接管 IPv4 / IPv6 并监测上游状态</string>
+</resources>

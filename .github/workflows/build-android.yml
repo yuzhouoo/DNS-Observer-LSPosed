@@ -68,6 +68,8 @@ jobs:
             tests/DnsFeatureStateTest.java \
             app/src/main/java/dev/yz/dnsobserver/DnsStateEpoch.java \
             tests/DnsStateEpochTest.java \
+            app/src/main/java/dev/yz/dnsobserver/DnsJobRuns.java \
+            tests/DnsJobRunsTest.java \
             app/src/main/java/dev/yz/dnsobserver/BoxWatchState.java \
             tests/BoxWatchStateTest.java \
             app/src/main/java/dev/yz/dnsobserver/DnsTcpAcceptLoop.java \
@@ -82,6 +84,7 @@ jobs:
             app/src/main/java/dev/yz/dnsobserver/DnsDiagnosis.java \
             tests/DnsIcmpProbeTest.java \
             tests/DnsFailoverTest.java
+          java -cp /tmp/dnsobserver-jvm dev.yz.dnsobserver.DnsJobRunsTest
           java -cp /tmp/dnsobserver-jvm dev.yz.dnsobserver.DnsStateEpochTest
           java -cp /tmp/dnsobserver-jvm dev.yz.dnsobserver.BoxWatchStateTest
           java -cp /tmp/dnsobserver-jvm dev.yz.dnsobserver.DnsTcpAcceptLoopTest
@@ -94,6 +97,7 @@ jobs:
           java -cp /tmp/dnsobserver-jvm dev.yz.dnsobserver.DnsFailoverTest
           python3 tests/test_sqlite_migration.py
           python3 tests/test_manifest.py
+          python3 tests/test_branding.py
           python3 tests/test_triple_dns.py
           python3 tests/test_icmp_wiring.py
       - name: Build debug APK
@@ -122,11 +126,11 @@ jobs:
           print('Verified: Modern API 102 resources included; no legacy entry')
           PY
       - name: Package complete source snapshot
-        run: git archive --format=zip --output=DNSObserver-v0.6.4-beta9-source.zip HEAD
+        run: git archive --format=zip --output=DNSObserver-v0.6.4-beta10-source.zip HEAD
       - uses: actions/upload-artifact@v4
         with:
-          name: DNSObserver-v0.6.4-beta9-source
-          path: DNSObserver-v0.6.4-beta9-source.zip
+          name: DNSObserver-v0.6.4-beta10-source
+          path: DNSObserver-v0.6.4-beta10-source.zip
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:

@@ -26,7 +26,8 @@ public final class DnsTakeoverService extends Service {
     private volatile boolean expect4,expect6;
     private boolean fault4,fault6;
     private final BoxWatchState boxWatch=new BoxWatchState();
-    private boolean boxWatchEnabled;
+    private boolean boxWatchEnabled,recoveringSession;
+    private volatile int stopRequestId;
     private long lastHealthCheck;
     private void boxStatus(String value){
         if(!value.equals(prefs().getString("box_watch_status","")))prefs().edit().putString("box_watch_status",value).apply();
@@ -71,20 +72,30 @@ public final class DnsTakeoverService extends Service {
     }
     @Override public IBinder onBind(Intent intent){return null;}
     private SharedPreferences prefs(){return getSharedPreferences(DnsForwardService.PREFS,MODE_PRIVATE);}
+    private Notification notification(String text){
+        int flags=android.app.PendingIntent.FLAG_UPDATE_CURRENT|android.app.PendingIntent.FLAG_IMMUTABLE;
+        android.app.PendingIntent open=android.app.PendingIntent.getActivity(this,54,
+            new Intent(this,DnsControlActivity.class),flags);
+        android.app.PendingIntent stop=android.app.PendingIntent.getService(this,55,
+            new Intent(this,DnsTakeoverService.class).setAction(ACTION_STOP),flags);
+        return new Notification.Builder(this,"dns_takeover")
+            .setSmallIcon(dev.yz.dnsobserver.R.drawable.ic_stat_dns)
+            .setContentTitle(getString(R.string.app_name)+" · DNS 接管")
+            .setContentText(text).setStyle(new Notification.BigTextStyle().bigText(text))
+            .setContentIntent(open).addAction(new Notification.Action.Builder(
+                android.R.drawable.ic_menu_close_clear_cancel,"停止接管",stop).build())
+            .setOnlyAlertOnce(true).setOngoing(true).build();
+    }
     private void foreground(){
         NotificationManager nm=(NotificationManager)getSystemService(NOTIFICATION_SERVICE);
-        if(Build.VERSION.SDK_INT>=26&&nm!=null)nm.createNotificationChannel(
-                new NotificationChannel("dns_takeover", "DNS Observer 接管状态",NotificationManager.IMPORTANCE_LOW));
-        Notification.Builder n=new Notification.Builder(this,"dns_takeover")
-                .setSmallIcon(android.R.drawable.stat_sys_download_done)
-                .setContentTitle("DNS Observer · IPv4 / IPv6 DNS 接管")
-                .setContentText("按选择的协议持续接管 · 可在应用内关闭")
-                .setOngoing(true);
-        startForeground(54,n.build());
+        if(nm!=null)nm.createNotificationChannel(new NotificationChannel("dns_takeover",
+            "域瞳 · DNS 接管状态",NotificationManager.IMPORTANCE_LOW));
+        startForeground(54,notification("准备检查服务与接管规则…"));
     }
     @Override public int onStartCommand(Intent intent,int flags,int startId){
         String action=intent==null?"":intent.getAction();
         if(ACTION_STOP.equals(action)){
+            stopRequestId=startId;
             stopped=true;uiPhase="stopping";DnsForwardService.cancelPendingStart();
             prefs().edit().putBoolean("takeover_enabled",false).commit();
             io.execute(this::stopAll);
@@ -93,15 +104,25 @@ public final class DnsTakeoverService extends Service {
         if(!ACTION_START.equals(action) && !prefs().getBoolean("takeover_enabled",false)) {
             stopSelf();return START_NOT_STICKY;
         }
+        if("stopping".equals(uiPhase)){
+            prefs().edit().putBoolean("takeover_enabled",false).commit();
+            event(this,"START_IGNORED: 正在关闭接管，忽略晚到的启动请求");return START_NOT_STICKY;
+        }
+        if(monitoring && !stopped)return START_STICKY;
         try{foreground();}catch(Exception error){event(this,"无法启动前台服务："+error);uiPhase="idle";stopSelf();return START_NOT_STICKY;}
         stopped=false;
         if(!monitoring){
+            recoveringSession=intent==null;
             monitoring=true;uiPhase="starting";
             io.execute(this::startSelected);
         }
         return START_STICKY;
     }
-    private void status(String line){prefs().edit().putString("takeover_status",line).apply();event(this,line);}
+    private void status(String line){
+        prefs().edit().putString("takeover_status",line).apply();event(this,line);
+        try{NotificationManager nm=(NotificationManager)getSystemService(NOTIFICATION_SERVICE);
+            if(nm!=null)nm.notify(54,notification(line));}catch(RuntimeException ignored){}
+    }
     private Intent ipv4Intent(SharedPreferences p){
         Intent i=new Intent(this,DnsForwardService.class).setAction(DnsForwardService.ACTION_START);
         i.putExtra("host",p.getString("host",""));
@@ -144,7 +165,17 @@ public final class DnsTakeoverService extends Service {
             }
             if(stopped)return;
             if(expect6){
-                String result=DnsIpv6GlobalController.start(this,()->!stopped&&prefs().getBoolean("takeover_enabled",false));
+                String result;
+                if(DnsIpv6GlobalController.active(this)){
+                    result="IPv6 DNS53 已启用：复用现有代理，规则校验通过";
+                }else{
+                    if(recoveringSession){
+                        String recovered=DnsIpv6GlobalController.stop(this);
+                        if(!recovered.contains("VERIFY_CLEAN"))throw new IllegalStateException("系统重建后的 IPv6 清理未确认："+recovered);
+                    }
+                    if(!sessionRequested())return;
+                    result=DnsIpv6GlobalController.start(this,()->!stopped&&prefs().getBoolean("takeover_enabled",false));
+                }
                 if(stopped||!prefs().getBoolean("takeover_enabled",false))return;
                 status("IPv6："+result);
                 if(result.startsWith("IPv6 DNS53 已启用")){
@@ -335,7 +366,7 @@ public final class DnsTakeoverService extends Service {
         boxWatch.reset();boxStatus("接管已关闭 · 未监测，不会自动启动");
         monitoring=false;uiPhase="idle";
         stopForeground(STOP_FOREGROUND_REMOVE);
-        stopSelf();
+        if(stopRequestId>0)stopSelf(stopRequestId);else stopSelf();
     }
     @Override public void onDestroy(){stopped=true;uiPhase="idle";io.shutdown();super.onDestroy();}
 }

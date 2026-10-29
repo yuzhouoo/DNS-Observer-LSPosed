@@ -33,7 +33,7 @@ public final class DnsControlActivity extends Activity {
     private static final int SECOND=TechUi.MUTED;
     private final Handler ui = new Handler(Looper.getMainLooper());
     private EditText host, port, bootstrap, subHost, subPort, secondaryHost, secondaryPort;
-    private TextView history;
+    private TextView history,backgroundInfo;
     private LinearLayout speedResults;
     private static volatile boolean measuring;
     private static volatile String speedMessage="测速：未开始";
@@ -177,6 +177,13 @@ public final class DnsControlActivity extends Activity {
     private void renderFeatureStates() {
         if(featureOverview==null)return;
         if(speedStatus!=null)speedStatus.setText(speedMessage);
+        if(backgroundInfo!=null){
+            android.app.NotificationManager nm=(android.app.NotificationManager)getSystemService(NOTIFICATION_SERVICE);
+            String job=prefs.getString("upstream_job_status","等待系统首次调度");
+            backgroundInfo.setText("接管服务："+("idle".equals(DnsTakeoverService.uiPhase())?"未运行":"前台服务会话中")+
+                "\n状态通知："+(nm!=null&&nm.areNotificationsEnabled()?"已允许":"未允许，可点击下方开启")+
+                "\n空闲上游检测：系统周期任务（最短约 15 分钟，非准时执行）\n最近任务："+job);
+        }
         String current=phase();
         boolean requested=prefs.getBoolean("takeover_enabled",false);
         boolean fresh=snapshot!=null && checkedAt>0 && snapshot.fresh();
@@ -330,7 +337,7 @@ public final class DnsControlActivity extends Activity {
         setContentView(scroll);TechUi.safeScreen(this,scroll);
         button("‹  返回 DNS 观察",root).setOnClickListener(v->finish());
         root.addView(label("DNS 控制中心",26,FG));
-        root.addView(label("DNS Observer · v"+BuildConfig.VERSION_NAME,12,SECOND));
+        root.addView(label("域瞳 · DNS Observer · v"+BuildConfig.VERSION_NAME,12,SECOND));
         root.addView(label("IPv4 NAT / IPv6 TPROXY 独立选择 · 启用后不定时关闭 · Bootstrap-only",12,SECOND));
         featureOverview=selectable(label("正在核对各功能状态…",15,FG));
         featureOverview.setPadding(dp(16),dp(16),dp(16),dp(16));
@@ -343,6 +350,15 @@ public final class DnsControlActivity extends Activity {
         logArea(root,status,96);
         button("复制当前接管状态",root).setOnClickListener(v->copyText(featureOverview.getText()+"\n"+featureStamp.getText()+"\n"+status.getText(),"接管状态"));
 
+        root.addView(label("后台与任务",18,FG));
+        backgroundInfo=label("正在读取后台状态…",13,SECOND);root.addView(backgroundInfo);
+        button("开启状态通知 / 通知设置",root).setOnClickListener(v->{
+            if(android.os.Build.VERSION.SDK_INT>=33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)!=android.content.pm.PackageManager.PERMISSION_GRANTED){
+                requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS},81);
+            }else startActivity(new Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(android.provider.Settings.EXTRA_APP_PACKAGE,getPackageName()));
+        });
+        button("后台运行设置",root).setOnClickListener(v->startActivity(new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+            android.net.Uri.parse("package:"+getPackageName()))));
         root.addView(label("系统网络 · IPv6 总开关（Root）",18,FG));
         root.addView(label("开关开启：全部接口禁用 IPv6；开关关闭：全部接口启用 IPv6，立即写入并校验。失败恢复操作前状态。地址恢复需等待网络重新获取。",12,SECOND));
         systemIpv6=new Switch(this);

@@ -134,7 +134,7 @@ public final class UpstreamMonitor {
         } catch(Exception e) {
             result.error=e.getClass().getSimpleName()+": "+TextPolicy.clamp(e.getMessage(),100);
         }
-        try {DnsDb db=new DnsDb(ctx);db.addProbeResult(role,hostname,port,result);}
+        try {if(!Thread.currentThread().isInterrupted()){DnsDb db=new DnsDb(ctx);db.addProbeResult(role,hostname,port,result);}}
         catch(Exception ignored){/* Data logging must not affect active DNS */}
         return result;
     }

@@ -118,19 +118,22 @@ public final class DnsForwardService extends Service {
         return START_NOT_STICKY;
     }
 
+    private Notification forwardingNotification(String text){
+        int flags=android.app.PendingIntent.FLAG_UPDATE_CURRENT|android.app.PendingIntent.FLAG_IMMUTABLE;
+        android.app.PendingIntent open=android.app.PendingIntent.getActivity(this,53,new Intent(this,DnsControlActivity.class),flags);
+        android.app.PendingIntent stop=android.app.PendingIntent.getService(this,55,new Intent(this,DnsTakeoverService.class).setAction(DnsTakeoverService.ACTION_STOP),flags);
+        return new Notification.Builder(this,CHANNEL).setSmallIcon(R.drawable.ic_stat_dns)
+            .setContentTitle(getString(R.string.app_name)+" · IPv4 DNS 接管").setContentText(text)
+            .setContentIntent(open).addAction(new Notification.Action.Builder(android.R.drawable.ic_menu_close_clear_cancel,"停止接管",stop).build())
+            .setOnlyAlertOnce(true).setOngoing(true).build();
+    }
     private void showForeground() {
         NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
         if (Build.VERSION.SDK_INT >= 26 && nm != null) {
             nm.createNotificationChannel(new NotificationChannel(CHANNEL,
                     "DNS 接管运行状态", NotificationManager.IMPORTANCE_LOW));
         }
-        Notification.Builder n = Build.VERSION.SDK_INT >= 26
-                ? new Notification.Builder(this, CHANNEL) : new Notification.Builder(this);
-        n.setSmallIcon(android.R.drawable.stat_sys_download_done)
-                .setContentTitle("DNS Observer · DNS 接管")
-                .setContentText("本地 DNS 服务运行中，可在 App 内一键关闭")
-                .setOngoing(true);
-        startForeground(NOTIFY_ID, n.build());
+        startForeground(NOTIFY_ID, forwardingNotification("准备检查上游与本地监听；实际状态见接管控制页"));
     }
 
     private void startNow(){
@@ -468,6 +471,9 @@ public final class DnsForwardService extends Service {
         return t.getClass().getSimpleName() + (msg == null ? "" : ": " + TextPolicy.clamp(msg, 160));
     }
     private void writeState(boolean isRunning, String status) {
+        if(isRunning)try{NotificationManager nm=(NotificationManager)getSystemService(NOTIFICATION_SERVICE);
+            if(nm!=null)nm.notify(NOTIFY_ID,forwardingNotification(status));}catch(RuntimeException ignored){}
+
         getSharedPreferences(PREFS, MODE_PRIVATE).edit()
                 .putBoolean("running", isRunning).putString("status", status)
                 .putLong("updated", System.currentTimeMillis()).apply();
