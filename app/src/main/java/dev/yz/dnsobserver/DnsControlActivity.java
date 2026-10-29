@@ -353,7 +353,9 @@ public final class DnsControlActivity extends Activity {
         root.addView(label("后台与任务",18,FG));
         backgroundInfo=label("正在读取后台状态…",13,SECOND);root.addView(backgroundInfo);
         button("开启状态通知 / 通知设置",root).setOnClickListener(v->{
-            if(android.os.Build.VERSION.SDK_INT>=33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)!=android.content.pm.PackageManager.PERMISSION_GRANTED){
+            if(android.os.Build.VERSION.SDK_INT>=33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)!=android.content.pm.PackageManager.PERMISSION_GRANTED &&
+                (!prefs.getBoolean("notifications_requested",false)||shouldShowRequestPermissionRationale(android.Manifest.permission.POST_NOTIFICATIONS))){
+                prefs.edit().putBoolean("notifications_requested",true).apply();
                 requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS},81);
             }else startActivity(new Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(android.provider.Settings.EXTRA_APP_PACKAGE,getPackageName()));
         });
