@@ -120,6 +120,26 @@ public final class DnsControlActivity extends Activity {
         DnsUpstreamJob.schedule(this);
     }
 
+
+    private void toggleIpv6FromUi(Switch control,TextView result,boolean disable) {
+        control.setEnabled(false);result.setText("正在通过 Root 应用并验证…");
+        new Thread(()->{
+            String message;boolean success=false;
+            try {message=Ipv6SystemToggle.set(disable);success=true;}
+            catch(Exception error){message=error.toString();}
+            final boolean ok=success;final String output=message;
+            ui.post(()->{
+                if(ok)prefs.edit().putBoolean("system_ipv6_disabled",disable).commit();
+                else {
+                    control.setOnCheckedChangeListener(null);
+                    control.setChecked(prefs.getBoolean("system_ipv6_disabled",false));
+                    control.setOnCheckedChangeListener((b,value)->toggleIpv6FromUi(control,result,value));
+                }
+                result.setText(output);control.setEnabled(true);
+            });
+        },"IPv6-system-toggle").start();
+    }
+
     private int dp(int n) { return (int)(n*getResources().getDisplayMetrics().density+0.5f); }
     private TextView label(String text, int size, int color) {
         TextView l = new TextView(this);
@@ -160,11 +180,21 @@ public final class DnsControlActivity extends Activity {
         LinearLayout root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(16),dp(16),dp(16),dp(26));scroll.addView(root);
         setContentView(scroll);
-        root.addView(label("DNS Observer · v0.6.3-beta5",23,FG));
+        root.addView(label("DNS Observer · v0.6.4-beta1",23,FG));
         root.addView(label("IPv4 NAT / IPv6 TPROXY 独立选择 · 启用后不定时关闭 · Bootstrap-only",12,SECOND));
         status=selectable(label("正在检查接管状态…",14,FG));
         logArea(root,status,96);
         button("复制当前接管状态",root).setOnClickListener(v->copyVisibleText(status,"接管状态"));
+
+        root.addView(label("系统网络 · IPv6 总开关（Root）",18,FG));
+        root.addView(label("立即调整现有网络接口；网络切换后可能需要重新应用。IPv6-only 移动网络可能断网。",12,SECOND));
+        Switch systemIpv6=new Switch(this);
+        systemIpv6.setText("禁用 IPv6（仅 IPv4）");systemIpv6.setTextColor(FG);
+        systemIpv6.setChecked(prefs.getBoolean("system_ipv6_disabled",false));
+        root.addView(systemIpv6);
+        TextView ipv6Result=selectable(label("显示上次执行状态，非实时内核状态",12,SECOND));
+        root.addView(ipv6Result);
+        systemIpv6.setOnCheckedChangeListener((b,disable)->toggleIpv6FromUi(systemIpv6,ipv6Result,disable));
         host=field(root,"主 DNS 域名（不带协议、端口）",prefs.getString("host",""));
         port=field(root,"主 DNS 端口",prefs.getString("port","31017"));
         port.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
