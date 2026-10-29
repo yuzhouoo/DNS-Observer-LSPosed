@@ -160,7 +160,7 @@ public final class DnsControlActivity extends Activity {
             ui.post(()->{
                 checkingFeatures=false;
                 if(isFinishing()||isDestroyed())return;
-                if(version==snapshotVersion){snapshot=value;checkedAt=android.os.SystemClock.elapsedRealtime();}
+                if(version==snapshotVersion){snapshot=value;checkedAt=value.sampledAt;}
                 renderFeatureStates();
             });
         },"DNS-feature-status").start();
@@ -179,13 +179,13 @@ public final class DnsControlActivity extends Activity {
         if(speedStatus!=null)speedStatus.setText(speedMessage);
         String current=phase();
         boolean requested=prefs.getBoolean("takeover_enabled",false);
-        boolean fresh=snapshot!=null && checkedAt>0 && android.os.SystemClock.elapsedRealtime()-checkedAt<20000;
+        boolean fresh=snapshot!=null && checkedAt>0 && snapshot.fresh();
         String system=fresh?snapshot.system:"unknown";
         boolean selected4=prefs.getBoolean("takeover_ipv4",true),selected6=prefs.getBoolean("takeover_ipv6",false);
         DnsFeatureState v4=DnsFeatureState.resolve(!"stopping".equals(current)&&DnsForwardService.isStarting()?"starting":current,selected4,requested,
-            fresh&&!"unknown".equals(snapshot.v4),fresh&&"present".equals(snapshot.v4),fresh&&snapshot.active4);
+            fresh&&!"unknown".equals(snapshot.v4),fresh&&"present".equals(snapshot.v4),fresh&&snapshot.active4,fresh&&snapshot.serving4);
         DnsFeatureState v6=DnsFeatureState.resolve(!"stopping".equals(current)&&DnsIpv6GlobalController.isStarting()?"starting":current,selected6,requested,
-            fresh&&!"unknown".equals(snapshot.v6),fresh&&"present".equals(snapshot.v6),fresh&&snapshot.active6);
+            fresh&&!"unknown".equals(snapshot.v6),fresh&&"present".equals(snapshot.v6),fresh&&snapshot.active6,fresh&&snapshot.serving6);
         SharedPreferences record=getSharedPreferences(SecureProvider.PREFS,MODE_PRIVATE);
         boolean enabled=record.getBoolean("enabled",true);
         long hb=record.getLong("heartbeat",0);
@@ -202,7 +202,7 @@ public final class DnsControlActivity extends Activity {
             new String[]{"DNS 记录","IPv4 接管","IPv6 接管","系统 IPv6","自动重新接管","Box 自动适配","开机接管"},
             new String[]{records,v4.label,v6.label,systemLabel,
                 repairSwitch!=null&&repairSwitch.isChecked()?"已开启":"已关闭",
-                prefs.getBoolean("takeover_box_watch",true)?(requested?prefs.getString("box_watch_status","等待首次检测"):"已开启 · 接管关闭时不监测"):"已关闭",
+                prefs.getBoolean("takeover_box_watch",true)?(requested?(!"idle".equals(current)?prefs.getString("box_watch_status","等待首次检测"):"接管会话未运行 · 未监测"):"已开启 · 接管关闭时不监测"):"已关闭",
                 bootSwitch!=null&&bootSwitch.isChecked()?(requested?"已开启":"已开启 · 手动关闭后不自动启动"):"已关闭"},
             new int[]{enabled?(live?TechUi.GREEN:TechUi.AMBER):TechUi.MUTED,stateColor(v4),stateColor(v6),
                 "enabled".equals(system)?TechUi.CYAN:TechUi.AMBER,
@@ -213,7 +213,10 @@ public final class DnsControlActivity extends Activity {
             "最近校验："+new java.text.SimpleDateFormat("HH:mm:ss",java.util.Locale.getDefault()).format(
                 new java.util.Date(System.currentTimeMillis()-(android.os.SystemClock.elapsedRealtime()-checkedAt)));
         featureStamp.setText((checkingFeatures?"正在核对内核与代理… · ":"")+stamp+
-            (fresh&&!snapshot.error.isEmpty()?"\n"+snapshot.error:"")+(!fresh&&checkedAt>0?" · 结果已过期":""));
+            (snapshot!=null&&!snapshot.error.isEmpty()?"\n"+snapshot.error:"")+(!fresh&&checkedAt>0?" · 结果已过期 / 状态已变化":"")+
+            (fresh&&v4==DnsFeatureState.ERROR?"\nIPv4："+snapshot.detail4:"")+
+            (fresh&&v6==DnsFeatureState.ERROR?"\nIPv6："+snapshot.detail6:"")+
+            (requested&&"idle".equals(current)?"\n接管会话未运行（可能为覆盖安装或进程重建）；请先关闭清理，再重新开启。":""));
         boolean lifecycleBusy="starting".equals(current)||"stopping".equals(current);
         boolean session=requested || !"idle".equals(current) || (fresh&&(snapshot.active4||snapshot.active6));
         boolean lockConfig=session||lifecycleBusy||ipv6Busy||measuring;
@@ -241,7 +244,7 @@ public final class DnsControlActivity extends Activity {
             clean?"接管已关闭 · 无需清理":session?"关闭全部 DNS 接管":"检查并清理残留接管",!clean&&!"stopping".equals(current)&&!ipv6Busy,true);
         boolean v6Conflict=takeIpv6!=null && (session&&selected6 || fresh&&"present".equals(snapshot.v6));
         systemIpv6.setEnabled(fresh&&!"unknown".equals(system)&&!checkingFeatures&&!ipv6Busy&&!lifecycleBusy&&!measuring&&!v6Conflict);
-        if(!ipv6Busy){
+        if(!ipv6Busy && fresh && !"unknown".equals(system)){
             systemIpv6.setOnCheckedChangeListener(null);systemIpv6.setChecked("disabled".equals(system)||"blocked".equals(system));
             systemIpv6.setOnCheckedChangeListener((b,on)->toggleIpv6FromUi(systemIpv6,ipv6Result,on));
         }
@@ -258,6 +261,7 @@ public final class DnsControlActivity extends Activity {
         paint(speedButton,measuring?"正在测速… · 请等待结果":"开始主 / 从 / 备测速",!measuring&&!ipv6Busy&&!lifecycleBusy,false);
         paint(ruleButton,ruleBusy?"正在读取 IPv6 规则…":"查看 IPv6 规则详情",!ruleBusy&&!ipv6Busy&&!lifecycleBusy,false);
         if(repairSwitch!=null)repairSwitch.setText("自动重新接管 · "+(repairSwitch.isChecked()?"已开启":"已关闭"));
+        if(boxWatchSwitch!=null)boxWatchSwitch.setText("自动适配 Box · "+(boxWatchSwitch.isChecked()?"已开启":"已关闭"));
         if(bootSwitch!=null)bootSwitch.setText("开机自动接管 · "+(bootSwitch.isChecked()?"已开启":"已关闭"));
     }
     private void toggleIpv6FromUi(Switch control,TextView result,boolean disable) {

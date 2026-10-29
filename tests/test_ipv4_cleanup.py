@@ -78,6 +78,10 @@ with open(str(p)+'.lock','w') as lock:
     ok('install',token='oldsession');ok('install',token='newsession')
     assert 'SKIP_NEWER_SESSION' in ok('remove-owned',token='oldsession')
     ok('status');ok('remove-owned',token='newsession');ok('verify-clean')
+    # Repairs preserve the live service's token so its later stop remains authorized.
+    ok('install',token='livesession');ok('install',token='livesession')
+    assert 'SKIP_NEWER_SESSION' not in ok('remove-owned',token='livesession')
+    ok('verify-clean')
     # Concurrent install/remove operations serialize; a final stop leaves no owned residue.
     procs=[subprocess.Popen(['sh','-c',script,'--',mode,'12345','15353','0',str(os.getpid()),'abc123'],
              env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True) for mode in ['install','remove']]

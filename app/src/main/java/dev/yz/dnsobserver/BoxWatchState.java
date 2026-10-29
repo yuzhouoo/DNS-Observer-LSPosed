@@ -6,6 +6,11 @@ public final class BoxWatchState {
     private String candidate="", settled="";
     private int samples;
     public void reset(){candidate="";settled="";samples=0;}
+    /** A pre-start read establishes identity, not authorization to repair. */
+    public void seed(String state,String signature){
+        reset();
+        if(signature!=null&&!signature.isEmpty()&&("running".equals(state)||"stopped".equals(state)))settled=state+":"+signature;
+    }
     public Result observe(String state,String signature) {
         if(signature==null||signature.isEmpty()||!("running".equals(state)||"stopped".equals(state))) {
             candidate="";samples=0;

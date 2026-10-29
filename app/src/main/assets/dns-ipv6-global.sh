@@ -159,8 +159,9 @@ case "$MODE" in
         esac
         owner="$(awk '/^Uid:/ {print $2; exit}' "$proc/status" 2>/dev/null)"
         [ "$owner" = 0 ] || continue
+        pending="$pending $pid"
         if kill -TERM "$pid" 2>/dev/null; then
-            count=$((count+1)); pending="$pending $pid"
+            count=$((count+1))
         fi
     done
     # A Root app_process may linger briefly after su exits; wait before
@@ -179,7 +180,21 @@ case "$MODE" in
         kill -KILL "$pid" 2>/dev/null || true
         remaining=$((remaining+1))
     done
-    echo "OWNED_DAEMON_STOP: verified=$count forced=$remaining (PID ownership checked)"
+    # SIGKILL request is not proof of exit. Check identity again before reporting clean.
+    if [ "$remaining" -gt 0 ]; then sleep 1; fi
+    for pid in $pending; do
+        [ -r "/proc/$pid/cmdline" ] && [ -r "/proc/$pid/status" ] || continue
+        cmd="$(tr '\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null)"
+        case "$cmd" in
+            *dev.yz.dnsobserver.DnsIpv6GlobalDaemon*|*dobs6_*) ;;
+            *) continue;;
+        esac
+        owner="$(awk '/^Uid:/ {print $2; exit}' "/proc/$pid/status" 2>/dev/null)"
+        [ "$owner" = 0 ] || continue
+        echo "OWNED_DAEMON_STOP_FAILED: verified Root PID $pid remains" >&2
+        exit 14
+    done
+    echo "OWNED_DAEMON_STOP: verified=$count forced=$remaining (PID ownership and exit checked)"
     ;;
  stop-process)
     case "$TARGET_PID" in ''|*[!0-9]*) echo 'PROCESS_STOP_REFUSED: invalid PID' >&2; exit 13;; esac

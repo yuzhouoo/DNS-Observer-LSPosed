@@ -15,6 +15,8 @@ public final class DnsRootRules {
     public static final int PORT = 15353;
     private static final String SCRIPT = "dns-root-v062.sh";
 
+    private static volatile String checkFailure="";
+    public static String lastCheckFailure(){return checkFailure;}
     private DnsRootRules() { }
 
     private static File script(Context context) throws Exception {
@@ -97,7 +99,7 @@ public final class DnsRootRules {
     }
 
     public static boolean active(Context ctx) {
-        try { invoke(ctx, "status", false, "status", 5); return true; }
-        catch (Exception ignored) { return false; }
+        try { invoke(ctx, "status", false, "status", 5);checkFailure="";return true; }
+        catch (Exception error) {checkFailure=error.toString();return false; }
     }
 }

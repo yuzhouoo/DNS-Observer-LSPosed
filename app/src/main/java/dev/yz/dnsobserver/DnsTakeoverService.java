@@ -28,7 +28,9 @@ public final class DnsTakeoverService extends Service {
     private final BoxWatchState boxWatch=new BoxWatchState();
     private boolean boxWatchEnabled;
     private long lastHealthCheck;
-    private void boxStatus(String value){prefs().edit().putString("box_watch_status",value).apply();}
+    private void boxStatus(String value){
+        if(!value.equals(prefs().getString("box_watch_status","")))prefs().edit().putString("box_watch_status",value).apply();
+    }
     private boolean sessionRequested(){return !stopped&&prefs().getBoolean("takeover_enabled",false);}
     // No retry of a session that never passed IPv6 startup and rule verification.
     private boolean ipv6EverActive,ipv6RepairBlocked;
@@ -114,6 +116,10 @@ public final class DnsTakeoverService extends Service {
     }
     private static int parsePort(String value){try{return Integer.parseInt(value);}catch(Exception ex){return -1;}}
     private void startSelected(){
+        DnsStateEpoch.begin();
+        try{startSelectedInternal();}finally{DnsStateEpoch.end();}
+    }
+    private void startSelectedInternal(){
         SharedPreferences p=prefs();
         expect4=p.getBoolean("takeover_ipv4",true);
         expect6=p.getBoolean("takeover_ipv6",false);
@@ -123,6 +129,11 @@ public final class DnsTakeoverService extends Service {
         if(stopped || !p.getBoolean("takeover_enabled",false)){stopAll();return;}
         boolean active6Now=false;
         try {
+            if(p.getBoolean("takeover_box_watch",true)){
+                BoxRuntimeProbe baseline=BoxRuntimeProbe.read(this);
+                boxWatch.seed(baseline.state,baseline.signature);boxWatchEnabled=true;
+            }
+            if(!sessionRequested())return;
             // Never depend on Android's system resolver for hostname bootstrap.
             DnsBootstrap.parseLiteral(p.getString("bootstrap", "").trim());
             if(expect4){
@@ -159,6 +170,7 @@ public final class DnsTakeoverService extends Service {
         observer.setDaemon(true);observer.start();
     }
     private void monitor(){
+        try{
         while(!stopped && prefs().getBoolean("takeover_enabled",false)){
             try{Thread.sleep(3000);}catch(InterruptedException e){Thread.currentThread().interrupt();break;}
             if(stopped || !prefs().getBoolean("takeover_enabled",false))break;
@@ -167,6 +179,12 @@ public final class DnsTakeoverService extends Service {
             try{io.submit(this::monitorTick).get();}
             catch(InterruptedException ex){Thread.currentThread().interrupt();break;}
             catch(Exception ex){if(!stopped)event(this,"状态检查任务结束："+ex.toString());break;}
+        }
+        }finally{
+            if(sessionRequested()){
+                boxStatus("监测线程已退出 · 请关闭接管后重新开启");
+                event(this,"MONITOR_STOPPED: 状态监测已退出，请关闭接管后重新开启");
+            }
         }
     }
     private void monitorTick(){
@@ -185,7 +203,10 @@ public final class DnsTakeoverService extends Service {
                 return;
             }
             if(change==BoxWatchState.Result.WAIT){
-                boxStatus("进程 / 规则变化中 · 等待连续两次稳定");return;
+                boxStatus("进程 / 规则变化中 · 等待连续两次稳定");
+                long now=android.os.SystemClock.elapsedRealtime();
+                if(now-lastHealthCheck>=15000){checkAndRepair(false,false);lastHealthCheck=now;}
+                return;
             }
             boxStatus(("running".equals(probe.state)?"Box 运行中":"Box 已停止")+" · 正在监测（约 3 秒）");
             if(change==BoxWatchState.Result.CHANGED){
@@ -201,13 +222,17 @@ public final class DnsTakeoverService extends Service {
     }
     private boolean boxRequested(){return sessionRequested()&&prefs().getBoolean("takeover_box_watch",true);}
     private void restoreAfterBoxChange(){
+        DnsStateEpoch.begin();
+        try{restoreAfterBoxChangeInternal();}finally{DnsStateEpoch.end();}
+    }
+    private void restoreAfterBoxChangeInternal(){
         if(!boxRequested())return;
         // Reinsert only our own selectors after Box finished installing its chains.
         // Never retry an IPv6 session that failed its initial selftest.
         if(expect4 && DnsForwardService.isServing()){
             try{
-                DnsRootRules.install(this,false,"box"+System.currentTimeMillis());
-                if(boxRequested())status(DnsRootRules.active(this)?"BOX_RESTORE IPv4: 规则已重新安装并校验":"BOX_RESTORE_FAIL IPv4: 规则未通过校验");
+                boolean repaired=DnsForwardService.reapplyRules();
+                if(boxRequested())status(repaired?"BOX_RESTORE IPv4: 规则已重新安装并校验":"BOX_RESTORE_FAIL IPv4: 规则未通过校验");
             }catch(Exception ex){status("BOX_RESTORE_FAIL IPv4: "+ex.toString());}
         }
         if(!boxRequested())return;
@@ -228,19 +253,23 @@ public final class DnsTakeoverService extends Service {
         if(boxRequested())checkAndRepair(true);
     }
     private void checkAndRepair(){checkAndRepair(false);}
-    private void checkAndRepair(boolean boxRecovery){
+    private void checkAndRepair(boolean boxRecovery){checkAndRepair(boxRecovery,true);}
+    private void checkAndRepair(boolean boxRecovery,boolean allowRepair){
         if(stopped||!prefs().getBoolean("takeover_enabled",false))return;
             SharedPreferences p=prefs(); boolean heal=p.getBoolean("takeover_auto_repair",false);
-            heal=heal || (boxRecovery && boxRequested());
-            if(expect4){
-                boolean active=p.getBoolean("running",false)&&DnsRootRules.active(this);
+            heal=allowRepair && (heal || (boxRecovery && boxRequested()));
+            if(expect4 && !DnsForwardService.isStarting()){
+                boolean serving=DnsForwardService.isServing();
+                boolean active=serving&&DnsRootRules.active(this);
                 if(!active){
                     if(!fault4){status("DETECT: IPv4 DNS 接管被覆盖或服务退出");fault4=true;}
-                    if(heal){
+                    if(heal && !DnsForwardService.isStarting()){
                         try{
-                            if(!p.getBoolean("running",false))startForegroundService(ipv4Intent(p));
-                            else DnsRootRules.install(this,false,"repair"+System.currentTimeMillis());
-                            status("REPAIR: 已尝试重新接管 IPv4");
+                            if(!sessionRequested())return;
+                            if(!serving){
+                                startForegroundService(ipv4Intent(p));
+                                status("REPAIR: IPv4 服务启动请求已提交，等待实际校验");
+                            }else status(DnsForwardService.reapplyRules()?"REPAIR_OK IPv4: 服务及规则已校验":"REPAIR_PAUSED IPv4: 未完成重装或用户已取消");
                         }catch(Exception ex){status("REPAIR_FAIL IPv4: "+ex.getMessage());}
                     }
                 }else fault4=false;
@@ -254,6 +283,7 @@ public final class DnsTakeoverService extends Service {
                         // One attempt per fault episode. Failed repair is latched,
                         // never retry indefinitely while a port or route is occupied.
                         ipv6RepairBlocked=true;
+                        DnsStateEpoch.begin();
                         try{
                             String old=DnsIpv6GlobalController.stop(this);
                             status("IPv6 修复前清理："+old);
@@ -268,11 +298,16 @@ public final class DnsTakeoverService extends Service {
                                 }else status("REPAIR_PAUSED IPv6: "+result+"；本次会话停止重复修复");
                             }
                         }catch(Exception ex){status("REPAIR_PAUSED IPv6: "+ex.getMessage());}
+                        finally{DnsStateEpoch.end();}
                     }
                 }else fault6=false;
             }
     }
     private void stopAll(){
+        DnsStateEpoch.begin();
+        try{stopAllInternal();}finally{DnsStateEpoch.end();}
+    }
+    private void stopAllInternal(){
         uiPhase="stopping";stopped=true;expect4=false;expect6=false;
         ipv6EverActive=false;ipv6RepairBlocked=true;
         StringBuilder b=new StringBuilder("关闭接管：");

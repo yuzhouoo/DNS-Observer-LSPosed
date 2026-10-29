@@ -303,13 +303,15 @@ public final class DnsIpv6GlobalController {
                 stopRoot(ctx,process,rootPid,token);
                 process=null;rootPid=0;
             }
-            String result;
+            String result;boolean daemonConfirmed=true;
             // Explicit STOP is allowed to clean an older orphaned DNS Observer
             // Root listener after the app's original su wrapper was lost.
             try {log(ctx,root(ctx,"stop-owned-daemons","cleanup",12));}
-            catch(Exception ex){log(ctx,"旧 Root 代理进程核查失败："+ex.getMessage());}
+            catch(Exception ex){daemonConfirmed=false;log(ctx,"旧 Root 代理进程核查失败："+ex.getMessage());}
             try{result=root(ctx,"recover","cleanup",14);ownsRules=false;promoted=false;}
             catch(Exception ex){result="RECOVERY_FAILED: "+ex.getMessage();}
+            if(!daemonConfirmed)result="STOP_UNCONFIRMED: Root 代理停止未确认；规则清理结果见上方日志";
+            tcpReady=false;
             log(ctx,"关闭 IPv6 全局 DNS："+result);
             return result;
         }

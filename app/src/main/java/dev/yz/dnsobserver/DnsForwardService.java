@@ -49,6 +49,20 @@ public final class DnsForwardService extends Service {
         return s!=null && s.running && s.activated && s.udp4!=null && !s.udp4.isClosed()
             && s.tcp4!=null && !s.tcp4.isClosed();
     }
+    /** Repair through the living owner; preserve its session token and stop lock. */
+    public static boolean reapplyRules() throws Exception {
+        DnsForwardService owner=instance;
+        if(owner==null)return false;
+        synchronized(owner.firewallLock){
+            if(owner!=instance || !isServing() || owner.cancellationRequested ||
+                !owner.getSharedPreferences(PREFS,MODE_PRIVATE).getBoolean("takeover_enabled",false))return false;
+            DnsStateEpoch.begin();
+            try{
+                DnsRootRules.install(owner,owner.useIpv6,owner.session);
+                return !owner.cancellationRequested && isServing() && DnsRootRules.active(owner);
+            }finally{DnsStateEpoch.end();}
+        }
+    }
     private volatile boolean running, activated;
     private volatile boolean cancellationRequested;
     private final Object firewallLock = new Object();
@@ -119,7 +133,11 @@ public final class DnsForwardService extends Service {
         startForeground(NOTIFY_ID, n.build());
     }
 
-    private void startNow() {
+    private void startNow(){
+        DnsStateEpoch.begin();
+        try{startNowInternal();}finally{DnsStateEpoch.end();}
+    }
+    private void startNowInternal() {
         writeState(false, "准备启动，正在进行 Bootstrap 与上游检测");
         try {
             // Root checks can take seconds; never block Android's Service main thread.
@@ -416,7 +434,11 @@ public final class DnsForwardService extends Service {
                 .putString("active_role",DnsFailover.NAMES[role]).apply();
     }
 
-    private synchronized void stopNow() {
+    private synchronized void stopNow(){
+        DnsStateEpoch.begin();
+        try{stopNowInternal();}finally{DnsStateEpoch.end();}
+    }
+    private void stopNowInternal() {
         cancellationRequested = true;
         boolean wasActive;
         boolean ownsState=true;

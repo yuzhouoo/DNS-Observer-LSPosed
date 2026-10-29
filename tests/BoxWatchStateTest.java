@@ -22,6 +22,9 @@ public final class BoxWatchStateTest {
         s.reset();
         check(s.observe("running","pid2:rules2")==BoxWatchState.Result.WAIT);
         check(s.observe("running","pid2:rules2")==BoxWatchState.Result.BASELINE);
+        s.seed("stopped","none");
+        check(s.observe("running","early-restart")==BoxWatchState.Result.WAIT);
+        check(s.observe("running","early-restart")==BoxWatchState.Result.CHANGED);
         System.out.println("Box lifecycle debounce: PASS");
     }
 }

@@ -28,7 +28,9 @@ with TemporaryDirectory() as tmp:
     assert read(RULE6='-N DO6G061')['V6']=='present'
     assert read(ROUTE='15010: from all lookup 19754')['V6']=='present'
     assert read(TABLE='local ::/0 dev lo')['V6']=='present'
-    marker=root/'dobsr53_12345.run';marker.write_text('orphan');assert read()['V4']=='present';marker.unlink()
+    assert read(RULE4='-N DOBSR53_OTHER')['V4']=='off'
+    assert read(RULE6='-N DO6G061_BACKUP')['V6']=='off'
+    marker=root/'dobsr53_12345.run' ;marker.write_text('orphan');assert read()['V4']=='present';marker.unlink()
     for p in conf.glob('*/disable_ipv6'):p.write_text('1\n')
     assert read()['SYSTEM']=='disabled'
     (conf/'wlan0/disable_ipv6').write_text('0\n');assert read()['SYSTEM']=='blocked'

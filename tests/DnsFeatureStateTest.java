@@ -11,6 +11,9 @@ public final class DnsFeatureStateTest {
         check(DnsFeatureState.resolve("starting",true,true,false,false,false)==DnsFeatureState.STARTING,"pending action stays pending");
         check(DnsFeatureState.resolve("stopping",true,false,true,false,false)==DnsFeatureState.STOPPING,"async stop not prematurely off");
         check(DnsFeatureState.resolve("idle",false,false,true,false,false)==DnsFeatureState.OFF,"verified absent is off");
+        check(DnsFeatureState.resolve("idle",true,true,true,false,false)==DnsFeatureState.INTERRUPTED,"upgrade/process loss is interrupted, never on");
+        check(DnsFeatureState.resolve("idle",true,true,true,true,false)==DnsFeatureState.ERROR,"residue after process loss must still require cleanup");
+        check(DnsFeatureState.resolve("idle",false,false,true,false,false,true)==DnsFeatureState.ERROR,"live server with lost rules must never be rendered off");
         // Exercise every feature-state combination: new installs only from verified clean state.
         for(DnsFeatureState v4:DnsFeatureState.values())for(DnsFeatureState v6:DnsFeatureState.values()) {
             boolean actual=DnsFeatureState.mayStart(false,"idle",false,true,true,false,v4,v6,"disabled");
