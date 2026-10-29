@@ -12,6 +12,7 @@ import android.content.SharedPreferences;
 public final class DnsUpstreamJob extends JobService {
     private static final int ID=0x444e53;
     private final DnsJobRuns runs=new DnsJobRuns();
+    private final android.os.Handler main=new android.os.Handler(android.os.Looper.getMainLooper());
     public static void schedule(Context ctx) {
         JobScheduler jobs=(JobScheduler)ctx.getSystemService(Context.JOB_SCHEDULER_SERVICE);
         if(jobs==null) return;
@@ -64,11 +65,15 @@ public final class DnsUpstreamJob extends JobService {
                 }
             }catch(Exception error){outcome="失败："+error.getClass().getSimpleName();}
             finally {
-                if(runs.finish(run)){
-                    getSharedPreferences(DnsForwardService.PREFS,MODE_PRIVATE).edit()
-                        .putString("upstream_job_status",outcome).putLong("upstream_job_at",System.currentTimeMillis()).apply();
-                    jobFinished(params,false);
-                }
+                final String completedOutcome=outcome;
+                // Serialize completion with Android's onStopJob/onStartJob callbacks.
+                main.post(()->{
+                    if(runs.finish(run)){
+                        getSharedPreferences(DnsForwardService.PREFS,MODE_PRIVATE).edit()
+                            .putString("upstream_job_status",completedOutcome).putLong("upstream_job_at",System.currentTimeMillis()).apply();
+                        jobFinished(params,false);
+                    }
+                });
             }
         },"DNS-periodic-monitor");
         run.worker=worker;worker.start();return true;
