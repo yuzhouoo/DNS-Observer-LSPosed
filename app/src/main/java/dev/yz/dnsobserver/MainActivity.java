@@ -377,7 +377,7 @@ public final class MainActivity extends Activity {
     private void confirmClear() {
         if(clearBusy||exportBusy||clearDialogOpen)return;
         clearDialogOpen=true;
-        AlertDialog dialog=new AlertDialog.Builder(this)
+        AlertDialog confirmation=new AlertDialog.Builder(this)
                 .setTitle("清空全部解析记录？")
                 .setMessage("此操作不可撤销，导出前请确认。")
                 .setNegativeButton("取消", null)
@@ -390,7 +390,7 @@ public final class MainActivity extends Activity {
                         ui.post(() -> {clearBusy=false;setDataButtons(0);toast("记录已清空"); requestRefresh(); });
                     } catch (Throwable t) { ui.post(() -> {clearBusy=false;setDataButtons(1);toast("清空失败");requestRefresh();}); }
                 });}).create();
-        dialog.setOnDismissListener(d->clearDialogOpen=false);dialog.show();
+        confirmation.setOnDismissListener(d->clearDialogOpen=false);confirmation.show();
     }
 
     private void exportFile() {
