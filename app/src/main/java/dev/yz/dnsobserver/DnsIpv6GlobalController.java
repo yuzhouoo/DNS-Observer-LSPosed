@@ -35,7 +35,7 @@ public final class DnsIpv6GlobalController {
     private static final String PREF_LOG="ipv6_global_log";
     private static final String[] DOCS={"2001:db8:ffff::53","2001:db8:ffff::54"};
     private static volatile java.lang.Process process;
-    private static volatile boolean starting,ownsRules,promoted;
+    private static volatile boolean starting,ownsRules,promoted,tcpReady;
     private static String token;
     private static volatile String checkFailure="";
     public static String lastCheckFailure(){return checkFailure;}
@@ -66,7 +66,7 @@ public final class DnsIpv6GlobalController {
     }
     public static boolean isStarting(){return starting;}
     public static boolean isServing(){
-        java.lang.Process p=process;return promoted && p!=null && p.isAlive();
+        java.lang.Process p=process;return promoted && tcpReady && p!=null && p.isAlive();
     }
     public static boolean isRunning(){
         synchronized(LOCK){return starting||(process!=null && process.isAlive());}
@@ -162,10 +162,14 @@ public final class DnsIpv6GlobalController {
         Thread output=new Thread(()->{
             try(BufferedReader br=new BufferedReader(new InputStreamReader(p.getInputStream(),StandardCharsets.UTF_8))){
                 String line;while((line=br.readLine())!=null){
+                    if(process==p){
+                        if(line.startsWith("DNS6GLOBAL TCP_LISTENER_RECOVERING")||line.startsWith("DNS6GLOBAL TCP_LISTENER_FATAL")||line.startsWith("DNS6GLOBAL STOP"))tcpReady=false;
+                        if(line.startsWith("DNS6GLOBAL TCP_LISTENER_RECOVERED"))tcpReady=true;
+                    }
                     // Only meaningful events; no per-success log flood.
                     if(line.startsWith("DNS6GLOBAL READY")||line.startsWith("DNS6GLOBAL ERROR")||
                             line.startsWith("DNS6GLOBAL STOP")||line.contains("ERROR")||
-                            line.startsWith("DNS6GLOBAL FAILOVER_OK")||line.startsWith("DNS6GLOBAL UNHEALTHY")){
+                            line.startsWith("DNS6GLOBAL TCP_LISTENER_")||line.startsWith("DNS6GLOBAL FAILOVER_OK")||line.startsWith("DNS6GLOBAL UNHEALTHY")){
                         log(ctx,line.length()>350?line.substring(0,350):line);
                     }
                     if(line.startsWith("DNS6GLOBAL READY")||line.startsWith("DNS6GLOBAL ERROR"))signals.offer(line);
@@ -233,7 +237,7 @@ public final class DnsIpv6GlobalController {
         synchronized(LOCK){
             if(starting||(process!=null&&process.isAlive()))return "IPv6 全局试用已经运行或启动中";
             if(DnsIpv6PilotController.isRunning())return "请先停止原 IPv6 受限试运行，不能并行开启";
-            starting=true;ownsRules=false;promoted=false;rootPid=0;signals.clear();
+            starting=true;ownsRules=false;promoted=false;tcpReady=false;rootPid=0;signals.clear();
             token=UUID.randomUUID().toString().replace("-","");
             java.lang.Process started=null;
             boolean installAttempted=false;
@@ -244,6 +248,7 @@ public final class DnsIpv6GlobalController {
                 started=spawn(app,token,servers);process=started;
                 String ready=signals.poll(8000,TimeUnit.MILLISECONDS);
                 if(ready==null||!ready.startsWith("DNS6GLOBAL READY"))throw new IllegalStateException("代理未就绪："+ready);
+                tcpReady=true;
                 rootPid=parseRootPid(ready);
                 if(rootPid<=1)throw new IllegalStateException("Root 代理未报告可核验 PID，拒绝安装规则");
                 ensureAllowed(allowed);
@@ -257,6 +262,7 @@ public final class DnsIpv6GlobalController {
                     throw new IllegalStateException("扩大规则后的回包验证失败，立即恢复");
                 ensureAllowed(allowed);
                 log(app,root(app,"check",token,8));
+                if(!tcpReady||!started.isAlive())throw new java.io.IOException("TCP 监听尚未就绪或 Root 代理已经退出");
                 checkFailure="";
                 final java.lang.Process monitor=started;
                 Thread guard=new Thread(()->{
@@ -310,6 +316,7 @@ public final class DnsIpv6GlobalController {
     }
     public static boolean active(Context ctx) {
         synchronized(LOCK) {
+            if(!tcpReady){checkFailure="TCP 监听未就绪或正在恢复";return false;}
             if(process==null || !process.isAlive() || !promoted){checkFailure="Root 代理已退出或未完成启用";return false;}
             try { root(ctx,"check",token,8);checkFailure="";return true; }
             catch(Exception ex) {checkFailure=ex.toString();return false;}

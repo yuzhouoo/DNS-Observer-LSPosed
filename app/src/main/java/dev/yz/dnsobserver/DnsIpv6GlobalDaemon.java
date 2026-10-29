@@ -6,6 +6,7 @@ import android.system.OsConstants;
 import android.system.StructCmsghdr;
 import android.system.StructMsghdr;
 import android.system.StructTimeval;
+import android.system.StructPollfd;
 
 import java.io.FileDescriptor;
 import java.net.Inet6Address;
@@ -44,7 +45,10 @@ public final class DnsIpv6GlobalDaemon {
             Os.setsockoptInt(fd,OsConstants.SOL_SOCKET,OsConstants.SO_REUSEADDR,1);
             if(type==OsConstants.SOCK_DGRAM)
                 Os.setsockoptInt(fd,OsConstants.IPPROTO_IPV6,OsConstants.IPV6_RECVPKTINFO,1);
-            Os.setsockoptTimeval(fd,OsConstants.SOL_SOCKET,OsConstants.SO_RCVTIMEO,StructTimeval.fromMillis(950));
+            if(type==OsConstants.SOCK_DGRAM)
+                Os.setsockoptTimeval(fd,OsConstants.SOL_SOCKET,OsConstants.SO_RCVTIMEO,StructTimeval.fromMillis(950));
+            else
+                Os.fcntlInt(fd,OsConstants.F_SETFL,Os.fcntlInt(fd,OsConstants.F_GETFL,0)|OsConstants.O_NONBLOCK);
             Os.bind(fd,InetAddress.getByName("::1"),PORT);
             return fd;
         }catch(ErrnoException ex){
@@ -158,25 +162,53 @@ public final class DnsIpv6GlobalDaemon {
         }catch(Exception ex){errors.incrementAndGet();log("TCP_QUERY_ERROR "+ex.getClass().getSimpleName()+" "+String.valueOf(ex.getMessage()));}
         finally{close(fd);}
     }
-    private static void serveTcp(FileDescriptor server,Endpoint[] upstream,ThreadPoolExecutor workers){
-        while(running){
-            FileDescriptor client=null;
-            try{
-                client=Os.accept(server,new InetSocketAddress(0));
+    private static FileDescriptor createTcpListener()throws Exception {
+        FileDescriptor fd=createListener(OsConstants.SOCK_STREAM,OsConstants.IPPROTO_TCP);
+        try{Os.listen(fd,24);return fd;}catch(Exception error){close(fd);throw error;}
+    }
+    private static DnsTcpAcceptLoop<FileDescriptor,FileDescriptor> tcpLoop(FileDescriptor initial,Endpoint[] upstream,ThreadPoolExecutor workers){
+        return new DnsTcpAcceptLoop<>(initial,new DnsTcpAcceptLoop.Io<FileDescriptor,FileDescriptor>(){
+            public boolean running(){return DnsIpv6GlobalDaemon.running;}
+            public FileDescriptor accept(FileDescriptor server)throws Exception {
+                StructPollfd poll=new StructPollfd();poll.fd=server;poll.events=(short)OsConstants.POLLIN;
+                if(Os.poll(new StructPollfd[]{poll},950)==0)return null;
+                if((poll.revents&(OsConstants.POLLERR|OsConstants.POLLHUP|OsConstants.POLLNVAL))!=0)
+                    throw new java.io.IOException("TCP listener poll revents="+poll.revents+" valid="+server.valid());
+                if((poll.revents&OsConstants.POLLIN)==0)return null;
+                // The peer address is unused. Avoid sockaddr conversion and let getsockname
+                // on the accepted socket supply the original transparent destination.
+                return Os.accept(server,null);
+            }
+            public void configure(FileDescriptor client)throws Exception {
+                Os.fcntlInt(client,OsConstants.F_SETFL,Os.fcntlInt(client,OsConstants.F_GETFL,0)&~OsConstants.O_NONBLOCK);
                 Os.setsockoptTimeval(client,OsConstants.SOL_SOCKET,OsConstants.SO_RCVTIMEO,StructTimeval.fromMillis(3500));
-                final FileDescriptor fd=client;
-                workers.execute(()->handleTcp(fd,upstream));client=null;
-            }catch(ErrnoException ex){
-                if(ex.errno!=OsConstants.EAGAIN && ex.errno!=OsConstants.EINTR){
-                    errors.incrementAndGet();log("TCP_ACCEPT_ERROR errno="+ex.errno);running=false;break;
+                Os.setsockoptTimeval(client,OsConstants.SOL_SOCKET,OsConstants.SO_SNDTIMEO,StructTimeval.fromMillis(3500));
+            }
+            public void dispatch(FileDescriptor client){workers.execute(()->handleTcp(client,upstream));}
+            public void closeClient(FileDescriptor client){close(client);}
+            public void closeListener(FileDescriptor listener){close(listener);}
+            public FileDescriptor openListener()throws Exception{return createTcpListener();}
+            public DnsTcpAcceptLoop.Failure classify(Exception error){
+                if(error instanceof ErrnoException){
+                    int errno=((ErrnoException)error).errno;
+                    if(errno==OsConstants.EAGAIN||errno==OsConstants.EINTR||errno==OsConstants.ECONNABORTED||
+                       errno==OsConstants.EPROTO||errno==OsConstants.ENETUNREACH||errno==OsConstants.EHOSTUNREACH)
+                        return DnsTcpAcceptLoop.Failure.RETRY;
                 }
-            }catch(java.util.concurrent.RejectedExecutionException ex){errors.incrementAndGet();log("QUEUE_FULL protocol=TCP");}
-            catch(Exception ex){errors.incrementAndGet();log("TCP_ACCEPT_ERROR "+ex.getClass().getSimpleName());running=false;break;}
-            finally{close(client);}
-        }
+                return DnsTcpAcceptLoop.Failure.RECOVER;
+            }
+            public void event(String stage,Exception error){
+                if(error!=null)errors.incrementAndGet();
+                log(stage+(error==null?" port="+PORT+" listening=1":" "+error.toString()));
+            }
+            public void fatal(){DnsIpv6GlobalDaemon.running=false;}
+            public void pause(long millis)throws InterruptedException{Thread.sleep(millis);}
+            public long now(){return TimeUnit.NANOSECONDS.toMillis(System.nanoTime());}
+        });
     }
     public static void main(String[] args){
         FileDescriptor udp=null,tcp=null;ThreadPoolExecutor workers=null;
+        DnsTcpAcceptLoop<FileDescriptor,FileDescriptor> acceptLoop=null;
         try{
             if(Os.geteuid()!=0||args.length<3||args.length>7||args.length%2!=1||
                     !args[0].matches("[A-Za-z0-9_-]{1,64}"))throw new IllegalArgumentException("Root/token/endpoint count invalid");
@@ -189,18 +221,19 @@ public final class DnsIpv6GlobalDaemon {
                 upstream[i]=new Endpoint(addr,p);
             }
             udp=createListener(OsConstants.SOCK_DGRAM,OsConstants.IPPROTO_UDP);
-            tcp=createListener(OsConstants.SOCK_STREAM,OsConstants.IPPROTO_TCP);
-            Os.listen(tcp,24);
+            tcp=createTcpListener();
             workers=new ThreadPoolExecutor(2,4,10,TimeUnit.SECONDS,new ArrayBlockingQueue<>(32));
-            final FileDescriptor fUdp=udp,fTcp=tcp;final ThreadPoolExecutor pool=workers;
+            final FileDescriptor fUdp=udp;final ThreadPoolExecutor pool=workers;
+            acceptLoop=tcpLoop(tcp,upstream,pool);
             Thread thUdp=new Thread(()->serveUdp(fUdp,upstream,pool),"GlobalDns-UDP");
-            Thread thTcp=new Thread(()->serveTcp(fTcp,upstream,pool),"GlobalDns-TCP");
+            Thread thTcp=new Thread(acceptLoop,"GlobalDns-TCP");
             thUdp.setDaemon(true);thTcp.setDaemon(true);thUdp.start();thTcp.start();
             log("READY euid=0 pid="+Os.getpid()+" port="+PORT+" endpoints="+upstream.length+" persistent=1 pktinfo=1");
             while(running && thUdp.isAlive() && thTcp.isAlive())Thread.sleep(350);
         }catch(Throwable ex){log("ERROR "+ex.getClass().getSimpleName()+" "+String.valueOf(ex.getMessage()));}
         finally{
-            running=false;close(udp);close(tcp);
+            running=false;close(udp);
+            if(acceptLoop!=null)acceptLoop.close();else close(tcp);
             if(workers!=null)workers.shutdownNow();
             log("STOP received="+received.get()+" replied="+replied.get()+" errors="+errors.get());
         }
