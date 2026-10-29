@@ -39,6 +39,7 @@ public final class DnsControlActivity extends Activity {
     private static volatile String speedMessage="测速：未开始";
     private TextView status, ipv6PilotLog, ipv6GlobalLog, takeoverEvents;
     private CheckBox takeIpv4, takeIpv6;
+    private Switch boxWatchSwitch;
     private Switch repairSwitch, bootSwitch, systemIpv6;
     private TextView ipv6Result;
     private static volatile boolean ipv6Busy;
@@ -196,6 +197,7 @@ public final class DnsControlActivity extends Activity {
         featureOverview.setText("DNS 记录："+records+"\nIPv4 DNS 接管："+v4.label+
             "\nIPv6 DNS 接管："+v6.label+"\n系统 IPv6："+systemLabel+
             "\n自动重新接管："+(repairSwitch!=null&&repairSwitch.isChecked()?"已开启":"已关闭")+
+            "\nBox 自动适配："+(prefs.getBoolean("takeover_box_watch",true)?(requested?prefs.getString("box_watch_status","等待首次检测"):"已开启；接管关闭时不监测"):"已关闭")+
             "\n开机自动接管："+(bootSwitch!=null&&bootSwitch.isChecked()?(requested?"已开启，等待下次开机":"已开启；手动关闭后不自动启动"):"已关闭"));
         featureOverview.setTextColor(v4==DnsFeatureState.ERROR||v6==DnsFeatureState.ERROR?Color.rgb(255,170,112):FG);
         String stamp=checkedAt==0?"尚未完成本次状态校验":
@@ -360,6 +362,13 @@ public final class DnsControlActivity extends Activity {
         root.addView(repairSwitch);
         repairSwitch.setOnCheckedChangeListener((b,on)->
             {prefs.edit().putBoolean("takeover_auto_repair",on).apply();renderFeatureStates();});
+        boxWatchSwitch=new Switch(this);boxWatchSwitch.setText("自动适配 Box 启动 / 重启 / 停止");
+        boxWatchSwitch.setTextColor(FG);boxWatchSwitch.setChecked(prefs.getBoolean("takeover_box_watch",true));
+        root.addView(boxWatchSwitch);
+        boxWatchSwitch.setOnCheckedChangeListener((b,on)->{
+            prefs.edit().putBoolean("takeover_box_watch",on).apply();renderFeatureStates();
+        });
+        root.addView(label("仅在 DNS 接管会话中约每 3 秒检测；等待 Box 稳定后恢复已成功开启的协议。首次失败不反复重试，手动关闭后不自动开启。",12,SECOND));
         bootSwitch=new Switch(this);bootSwitch.setText("开机自动启动（仅上次保持接管开启时）");
         bootSwitch.setTextColor(FG);bootSwitch.setChecked(prefs.getBoolean("takeover_boot",false));
         root.addView(bootSwitch);

@@ -25,6 +25,11 @@ public final class DnsTakeoverService extends Service {
     private volatile boolean stopped=true, monitoring;
     private volatile boolean expect4,expect6;
     private boolean fault4,fault6;
+    private final BoxWatchState boxWatch=new BoxWatchState();
+    private boolean boxWatchEnabled;
+    private long lastHealthCheck;
+    private void boxStatus(String value){prefs().edit().putString("box_watch_status",value).apply();}
+    private boolean sessionRequested(){return !stopped&&prefs().getBoolean("takeover_enabled",false);}
     // No retry of a session that never passed IPv6 startup and rule verification.
     private boolean ipv6EverActive,ipv6RepairBlocked;
     private static volatile String uiPhase="idle";
@@ -155,18 +160,78 @@ public final class DnsTakeoverService extends Service {
     }
     private void monitor(){
         while(!stopped && prefs().getBoolean("takeover_enabled",false)){
-            try{Thread.sleep(15000);}catch(InterruptedException e){Thread.currentThread().interrupt();break;}
+            try{Thread.sleep(3000);}catch(InterruptedException e){Thread.currentThread().interrupt();break;}
             if(stopped || !prefs().getBoolean("takeover_enabled",false))break;
             // Root repair and stop share the same queue: a repair cannot install late rules
             // after stopAll has already reported cleanup complete.
-            try{io.submit(this::checkAndRepair).get();}
+            try{io.submit(this::monitorTick).get();}
             catch(InterruptedException ex){Thread.currentThread().interrupt();break;}
             catch(Exception ex){if(!stopped)event(this,"状态检查任务结束："+ex.toString());break;}
         }
     }
-    private void checkAndRepair(){
+    private void monitorTick(){
+        if(!sessionRequested())return;
+        boolean enabled=prefs().getBoolean("takeover_box_watch",true);
+        if(enabled!=boxWatchEnabled){boxWatch.reset();boxWatchEnabled=enabled;}
+        if(enabled){
+            BoxRuntimeProbe probe=BoxRuntimeProbe.read(this);
+            if(!boxRequested()){boxWatch.reset();boxWatchEnabled=false;return;}
+            BoxWatchState.Result change=boxWatch.observe(probe.state,probe.signature);
+            if(change==BoxWatchState.Result.UNKNOWN){
+                boxStatus("状态未知 · "+probe.error+"；未按停止处理");
+                // An unreadable Box snapshot cannot authorize Box-specific recovery.
+                long now=android.os.SystemClock.elapsedRealtime();
+                if(now-lastHealthCheck>=15000){checkAndRepair();lastHealthCheck=now;}
+                return;
+            }
+            if(change==BoxWatchState.Result.WAIT){
+                boxStatus("进程 / 规则变化中 · 等待连续两次稳定");return;
+            }
+            boxStatus(("running".equals(probe.state)?"Box 运行中":"Box 已停止")+" · 正在监测（约 3 秒）");
+            if(change==BoxWatchState.Result.CHANGED){
+                status("BOX_CHANGE: "+("running".equals(probe.state)?"Box 启动 / 重启或规则更新已稳定":"Box 已停止，校验现有 DNS 接管"));
+                if("running".equals(probe.state))restoreAfterBoxChange();
+                else checkAndRepair(true);
+                lastHealthCheck=android.os.SystemClock.elapsedRealtime();
+                return;
+            }
+        }else boxStatus("自动适配已关闭");
+        long now=android.os.SystemClock.elapsedRealtime();
+        if(now-lastHealthCheck>=15000){checkAndRepair();lastHealthCheck=now;}
+    }
+    private boolean boxRequested(){return sessionRequested()&&prefs().getBoolean("takeover_box_watch",true);}
+    private void restoreAfterBoxChange(){
+        if(!boxRequested())return;
+        // Reinsert only our own selectors after Box finished installing its chains.
+        // Never retry an IPv6 session that failed its initial selftest.
+        if(expect4 && DnsForwardService.isServing()){
+            try{
+                DnsRootRules.install(this,false,"box"+System.currentTimeMillis());
+                if(boxRequested())status(DnsRootRules.active(this)?"BOX_RESTORE IPv4: 规则已重新安装并校验":"BOX_RESTORE_FAIL IPv4: 规则未通过校验");
+            }catch(Exception ex){status("BOX_RESTORE_FAIL IPv4: "+ex.toString());}
+        }
+        if(!boxRequested())return;
+        if(expect6 && ipv6EverActive && !ipv6RepairBlocked){
+            ipv6RepairBlocked=true;
+            try{
+                String clean=DnsIpv6GlobalController.stop(this);
+                if(!boxRequested())return;
+                if(!clean.contains("VERIFY_CLEAN")){status("BOX_RESTORE_PAUSED IPv6: 自身规则清理未确认；禁止重装");return;}
+                String result=DnsIpv6GlobalController.start(this,this::boxRequested);
+                if(!boxRequested())return;
+                if(result.startsWith("IPv6 DNS53 已启用")&&DnsIpv6GlobalController.active(this)){
+                    ipv6RepairBlocked=false;fault6=false;
+                    status("BOX_RESTORE_OK IPv6: 规则及 UDP/TCP 自检通过");
+                }else status("BOX_RESTORE_PAUSED IPv6: "+result+"；停止本次会话自动重试");
+            }catch(Exception ex){status("BOX_RESTORE_PAUSED IPv6: "+ex.toString());}
+        }
+        if(boxRequested())checkAndRepair(true);
+    }
+    private void checkAndRepair(){checkAndRepair(false);}
+    private void checkAndRepair(boolean boxRecovery){
         if(stopped||!prefs().getBoolean("takeover_enabled",false))return;
             SharedPreferences p=prefs(); boolean heal=p.getBoolean("takeover_auto_repair",false);
+            heal=heal || (boxRecovery && boxRequested());
             if(expect4){
                 boolean active=p.getBoolean("running",false)&&DnsRootRules.active(this);
                 if(!active){
@@ -232,6 +297,7 @@ public final class DnsTakeoverService extends Service {
             }
         }
         status(b.toString()+" IPv4="+(clean4?"VERIFY_CLEAN":"VERIFY_FAILED")+"，IPv6="+(clean6?"VERIFY_CLEAN":"VERIFY_FAILED/请核对恢复日志"));
+        boxWatch.reset();boxStatus("接管已关闭 · 未监测，不会自动启动");
         monitoring=false;uiPhase="idle";
         stopForeground(STOP_FOREGROUND_REMOVE);
         stopSelf();

@@ -39,6 +39,8 @@ jobs:
           sh -n app/src/main/assets/dns-ipv6-global.sh
           sh -n app/src/main/assets/system-ipv6.sh
           sh -n app/src/main/assets/dns-ui-status.sh
+          sh -n app/src/main/assets/dns-box-status.sh
+          python3 tests/test_box_probe.py
           python3 tests/test_ipv4_cleanup.py
           python3 tests/test_ipv6_route_failure.py
           python3 tests/test_ui_status_probe.py
@@ -63,6 +65,8 @@ jobs:
             app/src/main/java/dev/yz/dnsobserver/DnsFailover.java \
             app/src/main/java/dev/yz/dnsobserver/DnsFeatureState.java \
             tests/DnsFeatureStateTest.java \
+            app/src/main/java/dev/yz/dnsobserver/BoxWatchState.java \
+            tests/BoxWatchStateTest.java \
             app/src/main/java/dev/yz/dnsobserver/DnsTcpAcceptLoop.java \
             tests/DnsTcpAcceptLoopTest.java \
             app/src/main/java/dev/yz/dnsobserver/RootScriptFiles.java \
@@ -75,6 +79,7 @@ jobs:
             app/src/main/java/dev/yz/dnsobserver/DnsDiagnosis.java \
             tests/DnsIcmpProbeTest.java \
             tests/DnsFailoverTest.java
+          java -cp /tmp/dnsobserver-jvm dev.yz.dnsobserver.BoxWatchStateTest
           java -cp /tmp/dnsobserver-jvm dev.yz.dnsobserver.DnsTcpAcceptLoopTest
           java -cp /tmp/dnsobserver-jvm dev.yz.dnsobserver.RootScriptFilesTest
           java -cp /tmp/dnsobserver-jvm dev.yz.dnsobserver.DnsFeatureStateTest
@@ -100,6 +105,7 @@ jobs:
               expected = {base + 'java_init.list', base + 'scope.list', base + 'module.prop'}
               assert expected.issubset(members), 'Modern module metadata missing: ' + repr(expected - members)
               assert 'assets/xposed_init' not in members, 'Legacy entry file must be absent'
+              assert 'assets/dns-box-status.sh' in members, 'Box state probe missing from APK'
               assert 'assets/dns-ui-status.sh' in members, 'Feature status probe missing from APK'
               assert 'assets/system-ipv6.sh' in members, 'System IPv6 toggle missing from APK'
               assert 'assets/dns-root.sh' in members, 'Root DNS control script missing from APK'
@@ -112,11 +118,11 @@ jobs:
           print('Verified: Modern API 102 resources included; no legacy entry')
           PY
       - name: Package complete source snapshot
-        run: git archive --format=zip --output=DNSObserver-v0.6.4-beta6-source.zip HEAD
+        run: git archive --format=zip --output=DNSObserver-v0.6.4-beta7-source.zip HEAD
       - uses: actions/upload-artifact@v4
         with:
-          name: DNSObserver-v0.6.4-beta6-source
-          path: DNSObserver-v0.6.4-beta6-source.zip
+          name: DNSObserver-v0.6.4-beta7-source
+          path: DNSObserver-v0.6.4-beta7-source.zip
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
