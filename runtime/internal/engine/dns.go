@@ -22,6 +22,7 @@ type endpoint struct {
 }
 type DNS struct {
 	viaCore atomic.Bool
+	ready6  atomic.Bool
 	mu      sync.RWMutex
 	ends    []endpoint
 	cfg     Config
@@ -422,29 +423,17 @@ func (d *DNS) listenSockets() error {
 	if d.cfg.IPv6 {
 		families = append(families, "6")
 	}
-	for _, f := range families {
-		addr := "0.0.0.0:15353"
-		if f == "6" {
-			addr = "[::]:15353"
-		}
-		lc := net.ListenConfig{Control: socketControl(f, true, false)}
-		p, e := lc.ListenPacket(context.Background(), "udp"+f, addr)
-		if e != nil {
+	for _, family := range families {
+		if e := d.listenFamily(family); e != nil {
+			if family == "6" && d.cfg.IPv4 {
+				d.log.Event("IPV6_LISTENER_PENDING", "%v; IPv4 retained", e)
+				continue
+			}
 			d.Close()
-			return fmt.Errorf("UDP%s listen: %w", f, e)
+			return e
 		}
-		d.closers = append(d.closers, p)
-		d.wg.Add(1)
-		go d.udp(p.(*net.UDPConn), f, false)
-		l, e := lc.Listen(context.Background(), "tcp"+f, addr)
-		if e != nil {
-			d.Close()
-			return fmt.Errorf("TCP%s listen: %w", f, e)
-		}
-		d.closers = append(d.closers, l)
-		d.wg.Add(1)
-		go d.tcp(l, false)
 	}
+
 	if d.cfg.Mode == "proxy" {
 		lc := net.ListenConfig{Control: socketControl("4", true, false)}
 		p, e := lc.ListenPacket(context.Background(), "udp4", "127.0.0.1:15354")
@@ -562,4 +551,32 @@ func answerIPs(b []byte) []string {
 		off += n
 	}
 	return out
+}
+
+func (d *DNS) listenFamily(family string) error {
+	if family == "6" && d.ready6.Load() {
+		return nil
+	}
+	addr := "0.0.0.0:15353"
+	if family == "6" {
+		addr = "[::]:15353"
+	}
+	lc := net.ListenConfig{Control: socketControl(family, true, false)}
+	p, e := lc.ListenPacket(context.Background(), "udp"+family, addr)
+	if e != nil {
+		return e
+	}
+	l, e := lc.Listen(context.Background(), "tcp"+family, addr)
+	if e != nil {
+		p.Close()
+		return e
+	}
+	d.closers = append(d.closers, p, l)
+	d.wg.Add(2)
+	go d.udp(p.(*net.UDPConn), family, false)
+	go d.tcp(l, false)
+	if family == "6" {
+		d.ready6.Store(true)
+	}
+	return nil
 }

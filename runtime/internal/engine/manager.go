@@ -102,6 +102,7 @@ func (m *Manager) apply(c Config) error {
 	if e := c.Validate(); e != nil {
 		return e
 	}
+	requested := c
 	m.FW.Allowed = func() bool {
 		mp, _ := os.ReadFile(m.Home + "/runtime/module-path")
 		for _, flag := range []string{"disable", "remove"} {
@@ -114,7 +115,7 @@ func (m *Manager) apply(c Config) error {
 			return false
 		}
 		a, _ := json.Marshal(wanted)
-		b, _ := json.Marshal(c)
+		b, _ := json.Marshal(requested)
 		return string(a) == string(b)
 	}
 	m.status.Mode = c.Mode
@@ -129,14 +130,29 @@ func (m *Manager) apply(c Config) error {
 	m.status.Phase = "starting"
 	m.status.Error = ""
 	m.state()
+	partial := ""
+	if c.IPv4 && c.IPv6 {
+		if e := m.FW.IPv6Unavailable(); e != nil {
+			c.IPv6 = false
+			partial = e.Error()
+			m.Log.Event("IPV6_PENDING", "%v", e)
+		}
+	}
 	if e := m.FW.Preflight(c); e != nil {
 		return e
 	}
-	d := NewDNS(c, m.Log)
+	d := NewDNS(requested, m.Log)
 	if e := d.Start(); e != nil {
 		return e
 	}
 	m.dns = d
+	if c.IPv6 && !d.ready6.Load() {
+		if !c.IPv4 {
+			return errors.New("IPv6 listener unavailable")
+		}
+		c.IPv6 = false
+		partial = "IPv6 监听未就绪，正常 IPv4 保留"
+	}
 	m.status.DNS = "listening"
 	// Ensure local relay works before any interception / proxy startup.
 	if e := ProbeDNS("127.0.0.1:15353", true); e != nil {
@@ -190,6 +206,11 @@ func (m *Manager) apply(c Config) error {
 	m.status.SIM = target
 	m.status.Phase = "running"
 	m.status.Error = ""
+	if partial != "" {
+		m.status.Phase = "partial"
+		m.status.IPv6 = "unavailable"
+		m.status.Error = partial
+	}
 	m.retry = 0
 	m.nextRetry = time.Time{}
 	m.lastResolve = time.Now()
@@ -374,8 +395,12 @@ func (m *Manager) Serve() error {
 			m.lastResolve = time.Time{}
 			m.Log.Event("NETWORK_SNAPSHOT", "%s", network)
 		}
+		if m.adjustFamilies(cfg) {
+			m.state()
+			continue
+		}
 		if networkChanged && cfg.Mode == "proxy" && cfg.LANBypass && cfg.Repair {
-			if e = m.refreshRules(cfg); e != nil {
+			if e = m.refreshRules(m.current); e != nil {
 				m.failed(cfg, e)
 				continue
 			}
@@ -389,10 +414,10 @@ func (m *Manager) Serve() error {
 			m.failed(cfg, errors.New("DNS worker absent"))
 			continue
 		}
-		if e = m.FW.Check(cfg); e != nil {
+		if e = m.FW.Check(m.current); e != nil {
 			m.Log.Event("RULE_HEALTH_FAILED", "%v", e)
 			if cfg.Repair {
-				if e = m.refreshRules(cfg); e != nil {
+				if e = m.refreshRules(m.current); e != nil {
 					m.failed(cfg, e)
 				}
 			} else {
@@ -548,4 +573,64 @@ func (m *Manager) proxyFailed(cfg Config, cause error) {
 	m.nextRetry = time.Now().Add(10 * time.Second)
 	m.status.RetryAt = m.nextRetry.UnixMilli()
 	m.state()
+}
+
+// A blocked/lost IPv6 family must not tear down healthy IPv4 workers.
+func (m *Manager) adjustFamilies(wanted Config) bool {
+	if !wanted.IPv4 || !wanted.IPv6 || m.dns == nil {
+		return false
+	}
+	reason := m.FW.IPv6Unavailable()
+	if reason != nil && m.current.IPv6 {
+		active := m.current
+		active.IPv6 = false
+		if e := m.refreshRules(active); e != nil {
+			m.failed(wanted, e)
+			return true
+		}
+		m.current = active
+		m.status.IPv6 = "unavailable"
+		m.status.Phase = "partial"
+		m.status.Error = reason.Error()
+		m.Log.Event("IPV6_PAUSED_KEEP_IPV4", "%v", reason)
+		return true
+	}
+	if reason == nil && !m.current.IPv6 && wanted.Repair {
+		if e := m.dns.listenFamily("6"); e != nil {
+			m.status.IPv6 = "listener_pending"
+			m.status.Error = e.Error()
+			return true
+		}
+		if wanted.Mode == "proxy" && ProbeTCP("[::1]:9898") != nil {
+			m.dns.viaCore.Store(false)
+			dnsOnly := m.current
+			dnsOnly.Mode = "dns"
+			if e := m.refreshRules(dnsOnly); e != nil {
+				m.failed(wanted, e)
+				return true
+			}
+			m.core.Stop()
+			target, e := m.core.SIMTarget(wanted)
+			if e == nil {
+				e = m.core.Start(wanted, target)
+			}
+			if e != nil {
+				m.proxyFailed(wanted, e)
+				return true
+			}
+			m.dns.viaCore.Store(true)
+		}
+		if e := m.refreshRules(wanted); e != nil {
+			m.failed(wanted, e)
+			return true
+		}
+		m.current = wanted
+		m.status.IPv6 = "verified"
+		m.status.IPv4 = "verified"
+		m.status.Phase = "running"
+		m.status.Error = ""
+		m.Log.Event("IPV6_RECOVERED", "IPv4 worker retained")
+		return true
+	}
+	return false
 }

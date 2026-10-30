@@ -405,7 +405,7 @@ func (f *Firewall) Check(cfg Config) error {
 		if len(a) != 3 {
 			return errors.New("snapshot invalid")
 		}
-		got, e := f.R.Run("ip"+a[0]+"tables", "-w", "1", "-t", a[1], "-S", a[2])
+		got, e := f.R.Run(iptablesFor(a[0]), "-w", "1", "-t", a[1], "-S", a[2])
 		if e != nil || got != want {
 			return fmt.Errorf("规则内容被更改: %s", key)
 		}
@@ -465,4 +465,20 @@ func (f *Firewall) tableState(fam string) (string, error) {
 		return s, e
 	}
 	return s, nil
+}
+
+func (f *Firewall) IPv6Unavailable() error {
+	if e := f.blocked("6"); e != nil {
+		return e
+	}
+	for _, name := range []string{"all", "default", "lo"} {
+		b, e := os.ReadFile("/proc/sys/net/ipv6/conf/" + name + "/disable_ipv6")
+		if e != nil {
+			return e
+		}
+		if strings.TrimSpace(string(b)) != "0" {
+			return fmt.Errorf("IPv6 %s 被禁用；保留正常 IPv4", name)
+		}
+	}
+	return nil
 }
