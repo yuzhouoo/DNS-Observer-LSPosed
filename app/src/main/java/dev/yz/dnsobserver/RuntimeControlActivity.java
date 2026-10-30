@@ -59,9 +59,11 @@ public final class RuntimeControlActivity extends Activity {
     }
     private void apply(String mode){if(!loaded){Toast.makeText(this,"模块状态尚未读取成功",Toast.LENGTH_LONG).show();return;}try{
         JSONObject c="off".equals(mode)?new JSONObject(config.toString()).put("mode","off"):values(mode);
+        boolean first=!RootRuntimeBridge.selected(this);
+        if(first)DnsTakeoverService.requestStop(this);
         getSharedPreferences(DnsForwardService.PREFS,0).edit().putBoolean("module_backend",true).putBoolean("takeover_enabled",false).commit();
         android.app.job.JobScheduler js=(android.app.job.JobScheduler)getSystemService(JOB_SCHEDULER_SERVICE);if(js!=null)js.cancel(DnsUpstreamJob.ID);
-        run(()->RootRuntimeBridge.call("apply",RootRuntimeBridge.encode(c.toString())).toString(2));
+        run(()->{if(first){long end=System.currentTimeMillis()+65000;while(System.currentTimeMillis()<end){if("idle".equals(DnsTakeoverService.uiPhase())&&!DnsForwardService.isServing()&&!DnsForwardService.isStarting()&&!DnsIpv6GlobalController.isRunning())break;Thread.sleep(250);}if(!"idle".equals(DnsTakeoverService.uiPhase()))throw new IllegalStateException("旧接管清理仍在进行，请稍后刷新重试");}return RootRuntimeBridge.call("apply",RootRuntimeBridge.encode(c.toString())).toString(2);});
     }catch(Exception e){detail.setText("配置错误："+e.getMessage());}}
     private void fill(JSONObject c){
         ipv4.setChecked(c.optBoolean("ipv4",true));ipv6.setChecked(c.optBoolean("ipv6",true));boot.setChecked(c.optBoolean("boot"));repair.setChecked(c.optBoolean("repair",true));lan.setChecked(c.optBoolean("lan_bypass",true));block853.setChecked(c.optBoolean("block853"));dnsLog.setChecked(c.optBoolean("dns_log",true));bootstrap.setText(c.optString("bootstrap"));core.setText(c.optString("core","/data/adb/yutong/mihomo/mihomo"));profile.setText(c.optString("profile","/data/adb/yutong/mihomo/config.yaml"));sim.setChecked(c.optBoolean("sim_match"));sim1.setText(c.optString("sim1","DIRECT"));sim2.setText(c.optString("sim2","代理"));JSONArray a=c.optJSONArray("upstreams");for(int i=0;i<3;i++){JSONObject u=a==null?null:a.optJSONObject(i);hosts[i].setText(u==null?"":u.optString("host"));ports[i].setText(u==null?"31053":String.valueOf(u.optInt("port",31053)));}a=c.optJSONArray("bypass_uids");StringBuilder ids=new StringBuilder();if(a!=null)for(int i=0;i<a.length();i++){if(i>0)ids.append(',');ids.append(a.optInt(i));}uids.setText(ids.toString());

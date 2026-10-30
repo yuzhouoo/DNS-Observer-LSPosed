@@ -6,7 +6,7 @@ func NewManager(home string)*Manager{l:=NewLogger(home);r:=&Commands{Log:l};retu
 func(m *Manager)state(){m.mu.Lock();defer m.mu.Unlock();b,_:=json.Marshal(m.status);if string(b)==m.lastState&&time.Since(m.lastWrite)<15*time.Second{return};m.status.Updated=time.Now().UnixMilli();b,_=json.Marshal(m.status);m.lastState=string(b);m.lastWrite=time.Now();AtomicJSON(m.Home+"/run/status.json",m.status)}
 func(m *Manager)stop()error{m.status.Phase="stopping";m.state();e:=m.FW.Cleanup();m.core.Stop();if m.dns!=nil{m.dns.Close();m.dns=nil};m.status.DNS="off";m.status.Proxy="off";m.status.IPv4="off";m.status.IPv6="off";if e!=nil{m.status.Phase="cleanup_unconfirmed";m.status.Error=e.Error()}else{m.status.Phase="off";m.status.Error=""};m.state();m.Log.Event("STOP_RESULT","rules-clean=%t error=%v",e==nil,e);return e}
 func(m *Manager)apply(c Config)error{
- if e:=c.Validate();e!=nil{return e};m.FW.Allowed=func()bool{wanted,e:=LoadConfig(m.Home);if e!=nil{return false};a,_:=json.Marshal(wanted);b,_:=json.Marshal(c);return string(a)==string(b)};m.status.Mode=c.Mode;m.status.Boot=c.Boot
+ if e:=c.Validate();e!=nil{return e};m.FW.Allowed=func()bool{mp,_:=os.ReadFile(m.Home+"/runtime/module-path");for _,flag:=range []string{"disable","remove"}{if _,e:=os.Stat(strings.TrimSpace(string(mp))+"/"+flag);e==nil{return false}};wanted,e:=LoadConfig(m.Home);if e!=nil{return false};a,_:=json.Marshal(wanted);b,_:=json.Marshal(c);return string(a)==string(b)};m.status.Mode=c.Mode;m.status.Boot=c.Boot
  if e:=m.stop();e!=nil{return e};if c.Mode=="off"{m.current=c;return nil}
  m.status.Phase="starting";m.status.Error="";m.state()
  if e:=m.FW.Preflight(c);e!=nil{return e}

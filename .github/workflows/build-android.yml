@@ -169,6 +169,7 @@ jobs:
           path: YuTong-Runtime-v0.7.0-beta1-KernelSU-arm64.zip
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: Root-runtime-source-formatted
           path: |
