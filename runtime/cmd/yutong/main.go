@@ -5,6 +5,10 @@ func run()error{
  if os.Geteuid()!=0{return errors.New("ROOT_REQUIRED")};home:=engine.Home;os.MkdirAll(home+"/logs",0700);os.MkdirAll(home+"/run",0700)
  args:=os.Args[1:];if len(args)==0{return errors.New("usage: yutong manager|status|apply|boot|cleanup|logs|import-config|proxies|select")}
  switch args[0]{
+ case "stop":
+  c,e:=engine.LoadConfig(home);if e!=nil{return e};c.Mode="off";c.Revision=fmt.Sprint(time.Now().UnixNano());if e=engine.AtomicJSON(home+"/config.json",c);e!=nil{return e};printJSON(map[string]string{"accepted":"off"});return nil
+ case "diagnose":
+  log:=engine.NewLogger(home);r:=&engine.Commands{Log:log};out:=engine.Export(home);sys:=map[string]string{};commands:=[][]string{{"id"},{"getenforce"},{"ip","-4","rule","show"},{"ip","-6","rule","show"},{"ip","-4","route","show","table","all"},{"ip","-6","route","show","table","all"},{"ip","-6","addr","show"},{"ls","-lZ",home+"/bin/yutong"}};for _,fam:=range []string{"iptables","ip6tables"}{for _,table:=range []string{"mangle","nat","filter"}{commands=append(commands,[]string{fam,"-w","1","-t",table,"-S"})}};for _,a:=range commands{s,e:=r.Run(a...);if len(s)>30000{s=s[:30000]};sys[strings.Join(a," ")]=s+fmt.Sprint(e)};out["system"]=sys;printJSON(out);return nil
  case "manager":return engine.NewManager(home).Serve()
  case "status":printJSON(engine.Export(home));return nil
  case "logs":printJSON(engine.Export(home));return nil

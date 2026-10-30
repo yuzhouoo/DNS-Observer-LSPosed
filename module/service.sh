@@ -4,6 +4,8 @@ MODDIR=${0%/*}
 BASE=/data/adb/yutong
 umask 077
 mkdir -p "$BASE/bin" "$BASE/runtime" "$BASE/run" "$BASE/logs" "$BASE/mihomo" || exit 1
+touch "$BASE/run/updating"
+trap 'rm -f "$BASE/run/updating"' EXIT
 # Stop the old owned manager during module update before replacing the executable.
 if [ -x "$BASE/bin/yutong" ] && [ -f "$BASE/run/manager.pid" ]; then
   read -r pid < "$BASE/run/manager.pid"

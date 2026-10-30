@@ -2,7 +2,7 @@
 BASE=/data/adb/yutong
 if [ -x "$BASE/bin/yutong" ]; then
   # Preserve user's Mihomo/profile/logs; persist off before stopping recovery.
-  /data/adb/yutong/bin/yutong apply eyJtb2RlIjoib2ZmIn0=
+  /data/adb/yutong/bin/yutong stop
   n=0
   while :; do
     pid=$(cat "$BASE/run/manager.pid" 2>/dev/null)

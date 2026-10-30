@@ -17,22 +17,22 @@ func(d *DNS)Resolve(ctx context.Context)error{
  }
  if len(ends)==0{return errors.New("自建 DNS / Bootstrap 未返回可用 IP；未使用系统解析或公共备用")}
  // Verify UDP/TCP separately, keep only usable transports at query time (TCP can rescue UDP).
- good:=[]endpoint{};q:=queryPacket("example.com")
- for _,ep:=range ends{_,e:=exchange(ctx,"udp",ep.addr,q,true);if e!=nil{_,e=exchange(ctx,"tcp",ep.addr,q,true)};if e==nil{good=append(good,ep);d.log.Event("UPSTREAM_READY","group=%d endpoint=%s",ep.group,ep.addr)}else{d.log.Event("UPSTREAM_FAILED","group=%d endpoint=%s error=%v",ep.group,ep.addr,e)}}
+ good:=[]endpoint{};seen:=map[int]bool{};q:=queryPacket("example.com")
+ for _,ep:=range ends{if seen[ep.group]{continue};_,e:=exchange(ctx,"udp",ep.addr,q,true);if e!=nil{_,e=exchange(ctx,"tcp",ep.addr,q,true)};if e==nil{good=append(good,ep);seen[ep.group]=true;d.log.Event("UPSTREAM_READY","group=%d endpoint=%s",ep.group,ep.addr)}else{d.log.Event("UPSTREAM_FAILED","group=%d endpoint=%s error=%v",ep.group,ep.addr,e)}}
  if len(good)==0{return errors.New("自建 DNS 上游全部不可达（UDP/TCP 验证失败）")}
  d.mu.Lock();d.ends=good;d.mu.Unlock();return nil
 }
 func queryPacket(host string)[]byte{b:=[]byte{0x59,0x54,1,0,0,1,0,0,0,0,0,0};for _,p:=range strings.Split(host,"."){b=append(b,byte(len(p)));b=append(b,[]byte(p)...)};return append(b,0,0,1,0,1)}
 func validReply(q,a []byte)bool{qn,qt:=question(q);an,at:=question(a);if qn=="[invalid question]"||!strings.EqualFold(qn,an)||qt!=at{return false};return len(q)>=12&&len(a)>=12&&q[0]==a[0]&&q[1]==a[1]&&a[2]&128!=0&&a[5]>0&&a[3]&15!=2&&a[3]&15!=5}
 func exchange(ctx context.Context,network,addr string,q []byte,bypass bool)([]byte,error){
- c,e:=dial(ctx,network,addr,bypass);if e!=nil{return nil,e};defer c.Close();stop:=context.AfterFunc(ctx,func(){c.Close()});defer stop();c.SetDeadline(Deadline());var a []byte
+ c,e:=dial(ctx,network,addr,bypass);if e!=nil{return nil,e};defer c.Close();stop:=context.AfterFunc(ctx,func(){c.Close()});defer stop();dl:=time.Now().Add(1500*time.Millisecond);if network=="udp"{dl=time.Now().Add(1100*time.Millisecond)};if limit,ok:=ctx.Deadline();ok&&limit.Before(dl){dl=limit};c.SetDeadline(dl);var a []byte
  if network=="tcp" {frame:=append([]byte{byte(len(q)>>8),byte(len(q))},q...);if _,e=c.Write(frame);e!=nil{return nil,e};h:=make([]byte,2);if _,e=io.ReadFull(c,h);e!=nil{return nil,e};n:=int(binary.BigEndian.Uint16(h));if n<12{return nil,errors.New("short TCP DNS")};a=make([]byte,n);_,e=io.ReadFull(c,a)}else{if _,e=c.Write(q);e!=nil{return nil,e};a=make([]byte,65535);var n int;n,e=c.Read(a);a=a[:n]}
  if e!=nil{return nil,e};if !validReply(q,a){return nil,errors.New("DNS reply ID/rcode/question invalid")};if network=="udp"&&a[2]&2!=0{return nil,errors.New("truncated UDP DNS")};return a,nil
 }
 func servfail(q []byte)[]byte{a:=append([]byte(nil),q...);if len(a)<12{return nil};a[2]=(a[2]|128)&^2;a[3]=(a[3]&240)|2;for i:=6;i<12;i++{a[i]=0};return a}
 func(d *DNS)forward(q []byte,proto,client string,upstreamOnly bool)[]byte{
  if len(q)<12||q[2]&128!=0{return nil};start:=time.Now();d.mu.RLock();ends:=append([]endpoint(nil),d.ends...);d.mu.RUnlock();if d.viaCore.Load()&&!upstreamOnly{ends=[]endpoint{{addr:"127.0.0.1:1053",group:-1}}};var answer []byte;var last error;used:="";transport:=proto
- for _,ep:=range ends{ctx,cancel:=context.WithTimeout(d.ctx,6*time.Second);answer,last=exchange(ctx,proto,ep.addr,q,true);if last!=nil&&proto=="udp"{answer,last=exchange(ctx,"tcp",ep.addr,q,true);transport="tcp"};cancel();used=ep.addr;if last==nil{break}}
+ whole,cancelAll:=context.WithTimeout(d.ctx,8*time.Second);defer cancelAll();for _,ep:=range ends{if whole.Err()!=nil{last=whole.Err();break};ctx,cancel:=context.WithTimeout(whole,2600*time.Millisecond);answer,last=exchange(ctx,proto,ep.addr,q,true);if last!=nil&&proto=="udp"{answer,last=exchange(ctx,"tcp",ep.addr,q,true);transport="tcp"};cancel();used=ep.addr;if last==nil{break}}
  if last!=nil||answer==nil{answer=servfail(q);d.log.Event("DNS_UPSTREAM_FAILURE","endpoint=%s error=%v",used,last)}
  if d.cfg.DNSLog {name,typ:=question(q);d.log.Write("dns",map[string]any{"client":client,"uid":-1,"transport":proto,"upstream_transport":transport,"upstream":used,"name":name,"qtype":typ,"rcode":int(answer[3]&15),"elapsed_ms":time.Since(start).Milliseconds(),"ips":answerIPs(answer),"stage":map[bool]string{true:"mihomo_upstream",false:"client_query"}[upstreamOnly],"evidence":"root DNS relay; upstream response, not proof of client receipt"})}
  return answer
@@ -44,6 +44,9 @@ func(d *DNS)tcp(l net.Listener,upstreamOnly bool){defer d.wg.Done();for{c,e:=l.A
 func NewDNS(cfg Config,log *Logger)*DNS{ctx,cancel:=context.WithCancel(context.Background());return &DNS{cfg:cfg,log:log,ctx:ctx,cancel:cancel,slots:make(chan struct{},128)}}
 func(d *DNS)Start()error{
  ctx,cancel:=context.WithTimeout(d.ctx,30*time.Second);defer cancel();if e:=d.Resolve(ctx);e!=nil{return e}
+ return d.listenSockets()
+}
+func(d *DNS)listenSockets()error{
  // IPv4 local endpoint is always available for Mihomo; capture family choices stay independent.
  families:=[]string{"4"};if d.cfg.IPv6{families=append(families,"6")}
  for _,f:=range families{addr:="0.0.0.0:15353";if f=="6"{addr="[::]:15353"};lc:=net.ListenConfig{Control:socketControl(f,true,false)};p,e:=lc.ListenPacket(context.Background(),"udp"+f,addr);if e!=nil{d.Close();return fmt.Errorf("UDP%s listen: %w",f,e)};d.closers=append(d.closers,p);d.wg.Add(1);go d.udp(p.(*net.UDPConn),f,false);l,e:=lc.Listen(context.Background(),"tcp"+f,addr);if e!=nil{d.Close();return fmt.Errorf("TCP%s listen: %w",f,e)};d.closers=append(d.closers,l);d.wg.Add(1);go d.tcp(l,false)}

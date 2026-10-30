@@ -10,7 +10,7 @@ assert not (mod/'bin/mihomo').exists(), 'Mihomo must not be bundled'
 s=(mod/'supervisor.sh').read_text()
 assert 'wanted' in s and 'disable' in s and 'while "$BASE/bin/yutong" pidcheck' in s
 fw=(root/'runtime/internal/engine/firewall.go').read_text()
-assert '0x0/0x20000000' in fw and 'dport","53"' in fw
+assert '0x0/0x20000000' in fw and 'dport","53"' in fw.replace(' ', '')
 assert 'ownership.json' in fw and 'expected-rules.json' in fw
 ui=(root/'app/src/main/java/dev/yz/dnsobserver/RuntimeControlActivity.java').read_text()
 assert 'apply("off")' in ui and 'apply("dns")' in ui and 'apply("proxy")' in ui

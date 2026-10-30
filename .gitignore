@@ -12,3 +12,5 @@ local.properties
 
 module/bin/
 YuTong-Runtime-*.zip
+
+runtime/gofmt-linux-amd64

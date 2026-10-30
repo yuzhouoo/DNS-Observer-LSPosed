@@ -33,8 +33,11 @@ jobs:
           cd runtime
           go mod tidy
           gofmt -w .
+          cp "$(go env GOROOT)/bin/gofmt" gofmt-linux-amd64
           go test -race ./...
           go vet ./...
+          go test -c -o /tmp/yutong-engine-test ./internal/engine
+          sudo unshare --net /bin/sh -c 'ip link set lo up; sysctl -w net.ipv6.conf.all.disable_ipv6=0; YUTONG_KERNEL_TEST=1 /tmp/yutong-engine-test -test.run TestKernelTPROXY -test.v'
           mkdir -p ../module/bin
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags='-s -w' -o ../module/bin/yutong ./cmd/yutong
           cd ..
@@ -176,3 +179,4 @@ jobs:
             runtime/**/*.go
             runtime/go.mod
             runtime/go.sum
+            runtime/gofmt-linux-amd64

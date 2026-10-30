@@ -57,6 +57,7 @@ public final class MainActivity extends Activity {
     private static volatile boolean exportBusy,clearBusy;
     private int filter;
     private String protocolFilter="全部";
+    private long lastRuntimePull;
 
     @Override protected void onCreate(Bundle stateBundle) {
         super.onCreate(stateBundle);
@@ -262,6 +263,9 @@ public final class MainActivity extends Activity {
         final int index = requests.incrementAndGet();
         io.execute(() -> {
             try {
+                if(RootRuntimeBridge.selected(this)&&DnsObservationStore.enabled(this)&&System.currentTimeMillis()-lastRuntimePull>5000){
+                    lastRuntimePull=System.currentTimeMillis();try{RootRuntimeRecords.importRows(this,RootRuntimeBridge.call("status").optJSONArray("dns"));}catch(Exception ignored){}
+                }
                 DnsDb.Stats summary = database.stats();
                 List<DnsDb.Entry> items = database.latest(query, f,protocol);
                 boolean localProviderOk;

@@ -51,7 +51,8 @@ func(m *Manager)Serve()error{
   if m.status.Phase=="proxy_unavailable_dns_running"{if cfg.Repair&&now.After(m.nextRetry){if e=m.apply(cfg);e!=nil{m.failed(cfg,e)}};m.state();continue}
   if m.status.Phase=="failed"{if cfg.Repair&&now.After(m.nextRetry){if e=m.apply(cfg);e!=nil{m.failed(cfg,e)}};m.state();continue}
   if now.Sub(m.lastHealth)<15*time.Second{m.state();continue};m.lastHealth=now
-  network:=m.network();if network!=m.lastNetwork{m.lastNetwork=network;m.status.Network=network;m.lastResolve=time.Time{};m.Log.Event("NETWORK_SNAPSHOT","%s",network)}
+  network:=m.network();networkChanged:=network!=m.lastNetwork;if networkChanged{m.lastNetwork=network;m.status.Network=network;m.lastResolve=time.Time{};m.Log.Event("NETWORK_SNAPSHOT","%s",network)}
+  if networkChanged&&cfg.Mode=="proxy"&&cfg.LANBypass&&cfg.Repair{if e=m.refreshRules(cfg);e!=nil{m.failed(cfg,e);continue}}
   if cfg.Mode=="proxy"&&!m.core.Alive(){m.status.Proxy="exited";m.proxyFailed(cfg,errors.New("Mihomo owned child exited"));continue}
   if m.dns==nil{m.failed(cfg,errors.New("DNS worker absent"));continue}
   if e=m.FW.Check(cfg);e!=nil{m.Log.Event("RULE_HEALTH_FAILED","%v",e);if cfg.Repair{if e=m.refreshRules(cfg);e!=nil{m.failed(cfg,e)}}else{m.status.Phase="degraded";m.status.Error=e.Error()};continue}

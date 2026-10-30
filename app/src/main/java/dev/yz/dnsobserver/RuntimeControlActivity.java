@@ -46,14 +46,14 @@ public final class RuntimeControlActivity extends Activity {
             DnsTakeoverService.requestStop(this);Toast.makeText(this,"已请求旧接管清理，请等待完成后刷新",Toast.LENGTH_LONG).show();
         });
         button("旧版测速 / 历史与诊断",TechUi.SECONDARY,()->startActivity(new Intent(this,DnsControlActivity.class)));
-        button("查看完整调试摘要",TechUi.SECONDARY,()->{logs.setText(diagnostic);});
+        button("采集完整 Root 调试（规则 / 路由 / 上下文）",TechUi.SECONDARY,()->run(()->{String report=RootRuntimeBridge.call("diagnose").toString(2);ui.post(()->{diagnostic=report;logs.setText(report);});return "完整诊断已采集，可复制下方摘要";}));
         button("复制调试摘要（可能包含 DNS 域名和本地路径）",TechUi.SECONDARY,()->{ClipboardManager cb=(ClipboardManager)getSystemService(CLIPBOARD_SERVICE);cb.setPrimaryClip(ClipData.newPlainText("域瞳调试",diagnostic));});
         logs=text("调试日志：模块目录 /data/adb/yutong/logs；包含事件、Root 命令、DNS 和 Mihomo 日志。",12);logs.setTextIsSelectable(true);
     }
     private void pick(int code){Intent i=new Intent(Intent.ACTION_OPEN_DOCUMENT).setType("*/*").addCategory(Intent.CATEGORY_OPENABLE);startActivityForResult(i,code);}
     @Override protected void onActivityResult(int req,int result,Intent data){super.onActivityResult(req,result,data);if(result!=RESULT_OK||data==null||data.getData()==null)return;run(()->{try(java.io.InputStream in=getContentResolver().openInputStream(data.getData())){JSONObject r=RootRuntimeBridge.upload(req==72?"import-core":"import-config",in);return r.toString(2);}});}
     private interface Task{String call()throws Exception;}
-    private void run(Task task){if(busy)return;busy=true;paint();io.execute(()->{String message;try{message=task.call();}catch(Exception e){message=e.toString();}String value=message;ui.post(()->{busy=false;detail.setText(value);paint();read();});});}
+    private void run(Task task){if(busy)return;busy=true;detail.setText("正在执行，请等待后台返回结果…");paint();io.execute(()->{String message;try{message=task.call();}catch(Exception e){message=e.toString();}String value=message;ui.post(()->{busy=false;detail.setText(value);paint();read();});});}
     private JSONObject values(String mode)throws Exception{
         JSONObject c=new JSONObject();c.put("mode",mode);c.put("ipv4",ipv4.isChecked());c.put("ipv6",ipv6.isChecked());c.put("boot",boot.isChecked());c.put("repair",repair.isChecked());c.put("block853",block853.isChecked());c.put("lan_bypass",lan.isChecked());c.put("dns_log",dnsLog.isChecked());c.put("bootstrap",bootstrap.getText().toString().trim());c.put("core",core.getText().toString().trim());c.put("profile",profile.getText().toString().trim());c.put("sim_match",sim.isChecked());c.put("sim1",sim1.getText().toString().trim());c.put("sim2",sim2.getText().toString().trim());JSONArray up=new JSONArray();for(int i=0;i<3;i++){String h=hosts[i].getText().toString().trim();if(!h.isEmpty())up.put(new JSONObject().put("host",h).put("port",Integer.parseInt(ports[i].getText().toString().trim())));}c.put("upstreams",up);JSONArray a=new JSONArray();for(String s:uids.getText().toString().split("[,，\\s]+"))if(!s.isEmpty())a.put(Integer.parseInt(s));c.put("bypass_uids",a);return c;
     }

@@ -13,6 +13,7 @@ fi
 printf '%s\n' "$$" > "$LOCK/pid"
 trap 'rm -f "$LOCK/pid"; rmdir "$LOCK" 2>/dev/null' EXIT
 while :; do
+  if [ -f "$BASE/run/updating" ]; then sleep 1;continue;fi
   read -r MODDIR < "$BASE/runtime/module-path" || exit 1
   if [ -f "$MODDIR/disable" ] || [ -f "$MODDIR/remove" ]; then
     pid=$(cat "$BASE/run/manager.pid" 2>/dev/null)
