@@ -309,6 +309,16 @@ func TestKernelTPROXY(t *testing.T) {
 		t.Fatal(e)
 	}
 
+	// Missing only initial-route seeds must not look healthy just because the TPROXY chain exists.
+	if e = f.seed("4", "del"); e != nil {
+		t.Fatal(e)
+	}
+	if f.Check(cfg) == nil {
+		t.Fatal("missing DNS seed policy reported active")
+	}
+	if e = f.seed("4", "add"); e != nil {
+		t.Fatal(e)
+	}
 	// IPv6 blocking/recovery must retain the exact same DNS worker and healthy IPv4.
 	m := NewManager(home)
 	m.FW = &f
@@ -366,5 +376,19 @@ func TestKernelTPROXY(t *testing.T) {
 	case <-d.fault:
 	case <-time.After(time.Second):
 		t.Fatal("unexpected UDP listener loss was silent")
+	}
+}
+
+func TestExactPolicy(t *testing.T) {
+	s := "9000: from all fwmark 0/0x20000000 iif lo ipproto udp dport 53 lookup 19770\n"
+	w := map[string]string{"fwmark": "0x0/0x20000000", "iif": "lo", "ipproto": "udp", "dport": "53", "lookup": Table, "to": "0.0.0.0/0"}
+	if !hasPolicy(s, 9000, w) {
+		t.Fatal("equivalent numeric mark rejected")
+	}
+	if hasPolicy(strings.Replace(s, "dport 53", "dport 443", 1), 9000, w) {
+		t.Fatal("wrong port accepted")
+	}
+	if hasPolicy(strings.Replace(s, "0/0x20000000", "0/0x40000000", 1), 9000, w) {
+		t.Fatal("wrong mask accepted")
 	}
 }

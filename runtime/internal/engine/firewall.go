@@ -461,14 +461,39 @@ func (f *Firewall) Check(cfg Config) error {
 				return errors.New("IPv" + fam + " 接管规则缺失或被覆盖: " + x.parent)
 			}
 		}
-		s, e := f.ip(fam, "rule", "show")
-		if e != nil || !strings.Contains(s, "9100:") || !strings.Contains(s, "lookup "+Table) {
-			return errors.New("接管策略路由缺失")
+		rules, e := f.ip(fam, "rule", "show")
+		if e != nil {
+			return e
 		}
-		s, e = f.ip(fam, "route", "show", "table", Table)
-		if e != nil || !strings.Contains(s, "dev lo") {
-			return errors.New("本地路由缺失")
+		if !hasPolicy(rules, 9100, map[string]string{"fwmark": Capture, "lookup": Table}) {
+			return errors.New("精确接管 mark 路由缺失")
 		}
+		nets := []string{"0.0.0.0/0"}
+		lease := "198.18.254.1"
+		if fam == "6" {
+			nets = []string{"2000::/3", "fc00::/7"}
+			lease = "fd53:7974:6f6e::1"
+		}
+		for i, proto := range []string{"udp", "tcp"} {
+			for _, subnet := range nets {
+				if !hasPolicy(rules, 9000+i, map[string]string{"to": subnet, "iif": "lo", "fwmark": "0/0x20000000", "ipproto": proto, "dport": "53", "lookup": Table}) {
+					return fmt.Errorf("IPv%s %s %s DNS 初始选路不完整", fam, subnet, proto)
+				}
+			}
+		}
+		addr, e := f.ip(fam, "addr", "show", "dev", "lo")
+		if e != nil || !strings.Contains(addr, lease+"/") {
+			return errors.New("接管 loopback 源地址缺失")
+		}
+		route, e := f.tableState(fam)
+		if e != nil {
+			return e
+		}
+		lines := strings.Split(strings.TrimSpace(route), "\n")
+		if len(lines) != 1 || !strings.HasPrefix(lines[0], "local ") || !strings.Contains(route, "dev lo") || !strings.Contains(route, "src "+lease) {
+			return errors.New("接管本地路由/源地址不完整或被更改")
+		}
+
 	}
 	return nil
 }
@@ -535,4 +560,62 @@ func (f *Firewall) Probe(addr string, bypass bool) error {
 		}()
 	}
 	return ProbeDNSContext(ctx, addr, bypass)
+}
+
+func hasPolicy(text string, pref int, want map[string]string) bool {
+	for _, line := range strings.Split(text, "\n") {
+		a := strings.Fields(line)
+		if len(a) < 2 || a[0] != strconv.Itoa(pref)+":" {
+			continue
+		}
+		got := map[string]string{"to": "0.0.0.0/0"}
+		for i := 1; i+1 < len(a); i++ {
+			switch a[i] {
+			case "fwmark", "lookup", "iif", "ipproto", "dport", "to":
+				got[a[i]] = a[i+1]
+			}
+		}
+		ok := true
+		for key, value := range want {
+			actual := got[key]
+			if key == "fwmark" {
+				actual = markText(actual)
+				value = markText(value)
+			}
+			if key == "ipproto" {
+				if actual == "17" {
+					actual = "udp"
+				}
+				if actual == "6" {
+					actual = "tcp"
+				}
+			}
+			if key == "dport" && actual == "53-53" {
+				actual = "53"
+			}
+			if actual != value {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			return true
+		}
+	}
+	return false
+}
+func markText(s string) string {
+	a := strings.Split(s, "/")
+	if len(a) != 2 {
+		return s
+	}
+	v, e := strconv.ParseUint(a[0], 0, 32)
+	if e != nil {
+		return s
+	}
+	mask, e := strconv.ParseUint(a[1], 0, 32)
+	if e != nil {
+		return s
+	}
+	return fmt.Sprintf("%d/%d", v, mask)
 }
