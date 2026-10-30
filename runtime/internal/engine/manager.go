@@ -552,6 +552,10 @@ func (m *Manager) proxyFailed(cfg Config, cause error) {
 	}
 	m.dns.viaCore.Store(false)
 	dnsOnly := cfg
+	if m.current.Mode != "" && m.current.Mode != "off" {
+		dnsOnly.IPv4 = m.current.IPv4
+		dnsOnly.IPv6 = m.current.IPv6
+	}
 	dnsOnly.Mode = "dns"
 	if e := m.FW.Cleanup(); e != nil {
 		m.failed(cfg, e)

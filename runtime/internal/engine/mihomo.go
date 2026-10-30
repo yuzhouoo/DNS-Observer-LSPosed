@@ -80,7 +80,7 @@ func (c *Core) prepareAt(cfg Config, match, path string) (string, error) {
 	m["secret"] = c.Secret
 	m["allow-lan"] = true
 	m["bind-address"] = "*"
-	m["ipv6"] = cfg.IPv6
+	m["ipv6"] = true
 	// A new managed profile never rewrites the user's original YAML / providers.
 	m["dns"] = map[string]any{"enable": true, "listen": "127.0.0.1:1053", "enhanced-mode": "redir-host", "ipv6": true, "respect-rules": false, "use-system-hosts": false, "default-nameserver": []string{"127.0.0.1:15354"}, "nameserver": []string{"udp://127.0.0.1:15354"}, "proxy-server-nameserver": []string{"udp://127.0.0.1:15354"}, "direct-nameserver": []string{"udp://127.0.0.1:15354"}}
 	if cfg.SIMMatch && match != "" {

@@ -290,6 +290,10 @@ func TestKernelTPROXY(t *testing.T) {
 		t.Fatal(e)
 	}
 	if e = f.Selftest(cfg); e != nil {
+		for _, args := range [][]string{{"ip", "-4", "rule", "show"}, {"ip", "-4", "route", "show", "table", Table}, {"ip", "-4", "route", "get", "198.18.255.53", "ipproto", "udp", "dport", "53"}, {"ip", "-4", "route", "get", "198.18.255.53", "iif", "lo", "ipproto", "udp", "dport", "53"}} {
+			b, _ := exec.Command(args[0], args[1:]...).CombinedOutput()
+			t.Logf("%v: %s", args, b)
+		}
 		t.Fatalf("probe UDP/TCP v4/v6: %v", e)
 	}
 	if e = f.Cleanup(); e != nil {
