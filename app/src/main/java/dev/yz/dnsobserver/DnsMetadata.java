@@ -58,7 +58,7 @@ public final class DnsMetadata {
                 if(server.length()>0)server.append(" | ");
                 server.append("Private DNS: ").append(privateHost);
             }
-            return new Snapshot(dot?"私人 DNS 配置已启用（DoT；非逐请求证据）":
+            return new Snapshot(dot?"私人 DNS 加密配置已启用（协议未证实）":
                     "系统解析事件（传输协议无法由 Hook 判定）",
                     server.length()>0?server.toString():"网络未公开 DNS 地址",
                     scope+" 的系统 DNS 配置快照，非实际请求目标");

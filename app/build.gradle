@@ -7,8 +7,8 @@ android {
         applicationId 'dev.yz.dnsobserver'
         minSdk 29
         targetSdk 35
-        versionCode 32
-        versionName '0.6.4-beta10'
+        versionCode 33
+        versionName '0.6.4-beta11'
     }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17

@@ -12,19 +12,55 @@ import android.os.Process;
 import java.util.ArrayList;
 
 /**
- * Deliberately exported for IPC from system_server only. All methods reject normal apps.
- * No query/insert/update/delete IPC endpoints; only app-local SQLite reads in Activity.
+ * Exported system event IPC plus explicit opt-in HTTP reports restricted by caller UID and user whitelist.
+ * No database read or direct CRUD IPC; HTTP reports cannot forge UID or the system heartbeat.
  */
 public final class SecureProvider extends ContentProvider {
     public static final String AUTHORITY = "dev.yz.dnsobserver.events";
     public static final String PREFS = "observer";
     private DnsDb db;
+    private final java.util.HashMap<Integer,long[]> httpLimits=new java.util.HashMap<>();
+    private synchronized boolean httpRate(int uid,int count){
+        long minute=android.os.SystemClock.elapsedRealtime()/60000;
+        if(httpLimits.size()>128){httpLimits.entrySet().removeIf(e->e.getValue()[0]!=minute);if(!httpLimits.containsKey(uid)&&httpLimits.size()>128)return false;}
+        long[] value=httpLimits.get(uid);
+        if(value==null||value[0]!=minute){value=new long[]{minute,0};httpLimits.put(uid,value);}
+        if(count<1||count>20||value[1]+count>120)return false;value[1]+=count;return true;
+    }
+    private Bundle httpCall(String method,Bundle extras){
+        int uid=Binder.getCallingUid();Bundle result=new Bundle();
+        SharedPreferences p=getContext().getSharedPreferences(PREFS,0);
+        String[] packages=getContext().getPackageManager().getPackagesForUid(uid);
+        String allowed=p.getString("http_observe_packages","");boolean match=false;
+        if(packages!=null)for(String pkg:packages)for(String entry:allowed.split("[,\\s]+"))if(pkg.equals(entry))match=true;
+        boolean enabled=match&&p.getBoolean("enabled",true)&&p.getBoolean("detailed_observation",false);
+        result.putBoolean("enabled",enabled);
+        if(!enabled||!"appendHttp".equals(method)||extras==null)return result;
+        ArrayList<Bundle> events=extras.getParcelableArrayList("events");
+        if(events==null||!httpRate(uid,events.size()))return result;
+        ArrayList<Bundle> records=new ArrayList<>();
+        for(Bundle item:events){
+            if(item==null)continue;
+            DnsObservation.Http h=DnsObservation.http(item.getString("url","")+(item.getBoolean("dnsParam",false)?"?dns="+TextPolicy.clamp(item.getString("dnsQuery","REDACTED"),6000):""),item.getString("method"),item.getString("mime"));
+            if(h==null)continue;
+            Bundle b=new Bundle();b.putLong("ts",System.currentTimeMillis());b.putInt("uid",uid);
+            b.putString("packages",android.text.TextUtils.join(", ",packages));b.putString("host",h.host);
+            b.putString("recordKind","HTTP");b.putString("outcome","OBSERVED");b.putString("transport",h.transport);
+            b.putString("dnsType",h.transport+"（应用 HTTP API 观察）");b.putString("dnsServer",h.url);
+            b.putString("dnsSource","调用 UID 已校验；应用侧报告，未抓取 TLS 内部或实际回包");b.putString("evidence",h.evidence);
+            b.putString("detail",h.method+" "+h.url+"\n"+h.detail+"\n应用补充："+TextPolicy.clamp(item.getString("queryHint",""),512)+"\n"+TextPolicy.clamp(item.getString("apiResult",""),100));
+            records.add(b);
+        }
+        if(!records.isEmpty()){DnsMetadata.enrichBatch(getContext(),records);db.insertBatch(getContext(),records);}
+        result.putBoolean("ok",true);return result;
+    }
     @Override public boolean onCreate() {
         db = new DnsDb(getContext());
         return true;
     }
 
     @Override public Bundle call(String method, String arg, Bundle extras) {
+        if("httpConfig".equals(method)||"appendHttp".equals(method))return httpCall(method,extras);
         if ("selfTest".equals(method)) {
             // App-local read-only check, NEVER writes or forges a system Hook heartbeat.
             if (Binder.getCallingUid() != Process.myUid()) throw new SecurityException("app only");
@@ -47,18 +83,8 @@ public final class SecureProvider extends ContentProvider {
             if (records != null && records.size() <= 50) {
                 // system_server's environment may not expose a caller network/label.
                 // Read a permission-backed network snapshot in the app process instead.
+                if(!prefs.getBoolean("detailed_observation",false))records.removeIf(b->b!=null&&!"SYSTEM".equals(b.getString("recordKind","SYSTEM")));
                 DnsMetadata.enrichBatch(getContext(), records);
-                SharedPreferences proxy=getContext().getSharedPreferences(DnsForwardService.PREFS,0);
-                if (proxy.getBoolean("running",false)) {
-                    String ip=proxy.getString("current_ip","");
-                    String upstream=proxy.getString("active_host",proxy.getString("host",""));
-                    int port=proxy.getInt("active_port",31017);
-                    for(Bundle event: records) if(event!=null) {
-                        event.putString("dnsType","UDP/TCP 53 接管（配置快照）");
-                        event.putString("dnsServer",upstream+":"+port+(ip.isEmpty()?"":" ["+ip+"]"));
-                        event.putString("dnsSource","接管配置；非逐请求实际目标");
-                    }
-                }
                 db.insertBatch(getContext(), records);
             }
         }

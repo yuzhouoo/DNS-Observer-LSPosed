@@ -10,7 +10,7 @@ import io.github.libxposed.api.XposedModule;
 import io.github.libxposed.api.XposedInterface;
 
 /**
- * LSPosed Modern API 102, System Framework (system_server) scope only.
+ * LSPosed Modern API 102: System Framework events plus optional user-selected Java HTTP scopes.
  * Observes resolver events, never replaces or modifies any DNS result.
  */
 public final class ModernHookEntry extends XposedModule {
@@ -32,8 +32,31 @@ public final class ModernHookEntry extends XposedModule {
         // Independent installation: failure of one hook must not disable the other.
         installLifecycleHooks(loader);
         installDnsHook(loader);
+        installAuxiliaryHooks(loader);
+        HttpObservationHooks.install(this,loader);
     }
 
+    @Override public void onPackageReady(PackageReadyParam param){
+        if(!systemServer && !"dev.yz.dnsobserver".equals(param.getPackageName()))
+            HttpObservationHooks.install(this,param.getClassLoader());
+    }
+    private void installAuxiliaryHooks(ClassLoader loader){
+        try{Class<?> listener=Class.forName("com.android.server.connectivity.NetdEventListenerService",false,loader);
+            for(Method method:listener.getDeclaredMethods()){
+                Class<?>[] t=method.getParameterTypes();String n=method.getName();
+                boolean connection=n.equals("onConnectEvent")&&java.util.Arrays.equals(t,new Class<?>[]{int.class,int.class,int.class,String.class,int.class,int.class});
+                boolean validation=n.equals("onPrivateDnsValidationEvent")&&java.util.Arrays.equals(t,new Class<?>[]{int.class,String.class,String.class,boolean.class});
+                if(!connection&&!validation)continue;
+                hook(method).setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE).intercept(chain->{
+                    Object result=chain.proceed();try{
+                        if(connection)EventCollector.get().connection((Integer)chain.getArg(0),(Integer)chain.getArg(1),(Integer)chain.getArg(2),(String)chain.getArg(3),(Integer)chain.getArg(4),(Integer)chain.getArg(5));
+                        else EventCollector.get().validation((Integer)chain.getArg(0),(String)chain.getArg(1),(String)chain.getArg(2),(Boolean)chain.getArg(3));
+                    }catch(Throwable ignored){}return result;
+                });
+                report("auxiliary hook installed: "+n);
+            }
+        }catch(Throwable error){report("optional auxiliary hooks unavailable: "+error.getClass().getSimpleName());}
+    }
     private void installLifecycleHooks(ClassLoader loader) {
         try {
             Class<?> systemServerClass =

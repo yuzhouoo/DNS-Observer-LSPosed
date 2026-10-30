@@ -56,6 +56,7 @@ public final class MainActivity extends Activity {
     private boolean active,clearDialogOpen;
     private static volatile boolean exportBusy,clearBusy;
     private int filter;
+    private String protocolFilter="全部";
 
     @Override protected void onCreate(Bundle stateBundle) {
         super.onCreate(stateBundle);
@@ -90,7 +91,7 @@ public final class MainActivity extends Activity {
         state = text("检查 Hook 状态…", 14, AQUA, true);
         overview.addView(state);
         state.setLetterSpacing(0.02f);
-        stats = text("记录 0 · 域名 0 · 失败 0", 15, TEXT, true);
+        stats = text("记录 0 · 目标 0 · 完成失败 0", 15, TEXT, true);
         stats.setPadding(0, dp(10), 0, dp(5));
         overview.addView(stats);
         note = text("", 12, MUTED, false);
@@ -123,6 +124,18 @@ public final class MainActivity extends Activity {
         });
         TechUi.toggle(running);main.addView(running,new LinearLayout.LayoutParams(-1,-2));
         TechUi.spaced(running);
+        Switch detailed=new Switch(this);detailed.setText("详细观察 · 协议证据 / DNS 相关请求");
+        TechUi.toggle(detailed);detailed.setChecked(prefs.getBoolean("detailed_observation",false));
+        detailed.setOnCheckedChangeListener((b,on)->{prefs.edit().putBoolean("detailed_observation",on).apply();requestRefresh();});
+        main.addView(detailed,new LinearLayout.LayoutParams(-1,-2));TechUi.spaced(detailed);
+        TextView coverage=text("系统解析事件不等于逐包抓取。详细模式增加接管 UDP/TCP、私人 DNS 验证、853 连接及选定应用的 Java HTTP 调用。Go / 原生 QUIC / 未勾选作用域不保证覆盖。Root 明细最多 25 条/秒，HTTP 每 UID 120 条/分钟；超量丢弃，非全量抓包。",12,MUTED,false);
+        coverage.setPadding(0,dp(8),0,dp(8));main.addView(coverage);
+        EditText httpPackages=new EditText(this);TechUi.input(httpPackages);httpPackages.setSingleLine(false);
+        httpPackages.setHint("HTTP 观察包名白名单，空格分隔；如 android com.example.app");httpPackages.setText(prefs.getString("http_observe_packages",""));main.addView(httpPackages);
+        Button saveScopes=new Button(this);saveScopes.setText("保存 HTTP 观察白名单");TechUi.button(saveScopes,TechUi.SECONDARY);main.addView(saveScopes);
+        saveScopes.setOnClickListener(v->{String value=httpPackages.getText().toString().trim();
+            if(value.length()>4000||(!value.isEmpty()&&!value.matches("[a-zA-Z0-9_.,\\s]+"))){toast("包名格式无效");return;}
+            prefs.edit().putString("http_observe_packages",value).apply();toast("已保存。还需在 LSPosed 勾选这些应用并重启目标应用；系统框架新 Hook 需重启系统。");});
         Button export = exportButton = action("导出 CSV");
         export.setOnClickListener(v -> exportFile());
         controls.addView(export,new LinearLayout.LayoutParams(0,-2,1));
@@ -151,6 +164,18 @@ public final class MainActivity extends Activity {
                 requestRefresh();});
         }
 
+        android.widget.Spinner protocols=new android.widget.Spinner(this);
+        String[] protocolNames={"全部","系统解析","UDP","TCP","DoH","HTTP_DNS","关键词 / 疑似","协议未知"};
+        android.widget.ArrayAdapter<String> protocolAdapter=new android.widget.ArrayAdapter<String>(this,android.R.layout.simple_spinner_item,protocolNames){
+            @Override public View getView(int position,View convert,ViewGroup parent){TextView t=(TextView)super.getView(position,convert,parent);t.setTextColor(TEXT);t.setTextSize(14);t.setPadding(dp(12),dp(14),dp(12),dp(14));return t;}
+            @Override public View getDropDownView(int position,View convert,ViewGroup parent){TextView t=(TextView)super.getDropDownView(position,convert,parent);t.setTextColor(TEXT);t.setBackgroundColor(PANEL);t.setPadding(dp(14),dp(16),dp(14),dp(16));return t;}
+        };
+        protocols.setAdapter(protocolAdapter);protocols.setBackground(TechUi.panel(this,PANEL,12));
+        main.addView(text("协议 / 来源筛选",12,MUTED,false));main.addView(protocols,new LinearLayout.LayoutParams(-1,-2));
+        protocols.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener(){
+            @Override public void onItemSelected(android.widget.AdapterView<?> parent,View view,int position,long id){protocolFilter=protocolNames[position];requestRefresh();}
+            @Override public void onNothingSelected(android.widget.AdapterView<?> parent){}
+        });
         TextView caption = text("解析记录 · 3 秒刷新 · 状态筛选 · 点击展开 IP", 12, MUTED, false);
         caption.setPadding(0, dp(11), 0, dp(8));
         main.addView(caption);
@@ -233,11 +258,12 @@ public final class MainActivity extends Activity {
         if (!active) return;
         final String query = search.getText().toString();
         final int f = filter;
+        final String protocol=protocolFilter;
         final int index = requests.incrementAndGet();
         io.execute(() -> {
             try {
                 DnsDb.Stats summary = database.stats();
-                List<DnsDb.Entry> items = database.latest(query, f);
+                List<DnsDb.Entry> items = database.latest(query, f,protocol);
                 boolean localProviderOk;
                 try {
                     Bundle probe = getContentResolver().call(
@@ -250,7 +276,7 @@ public final class MainActivity extends Activity {
                 final boolean providerReady = localProviderOk;
                 ui.post(() -> {
                     if (!active || index != requests.get()) return;
-                    stats.setText("记录 " + summary.total + "  ·  域名 " + summary.domains +
+                    stats.setText("记录 " + summary.total + "  ·  目标 " + summary.domains +
                             "  ·  失败 " + summary.failures);
                     long hb = prefs.getLong("heartbeat", 0L);
                     boolean live = hb > 0 && System.currentTimeMillis() - hb < 25000L;
@@ -306,8 +332,9 @@ public final class MainActivity extends Activity {
             TextView host=text(e.host,15,TEXT,true);
             host.setMaxLines(2);
             heading.addView(host,new LinearLayout.LayoutParams(0,-2,1));
-            TextView result=text(e.rc==0?"成功":"失败",12,e.rc==0?GREEN:RED,true);
-            TechUi.badge(result,e.rc==0);
+            boolean observed="OBSERVED".equals(e.outcome);
+            TextView result=text(observed?"调用观察":"VALIDATION".equals(e.recordKind)?(e.rc==0?"验证通过":"验证失败"):e.rc==0?"成功":"失败",12,observed?AQUA:e.rc==0?GREEN:RED,true);
+            if(!observed)TechUi.badge(result,e.rc==0);
             heading.addView(result);
             card.addView(heading);
             // Old v0.4.0 rows have no appName; never discard their known package.
@@ -338,14 +365,17 @@ public final class MainActivity extends Activity {
                     12,MUTED,false);
             dns.setPadding(0,dp(5),0,dp(4));card.addView(dns);
             TextView source=text(safe(e.dnsSource),11,MUTED,false);card.addView(source);
+            TextView evidence=text("来源："+e.recordKind+" · 协议："+e.transport+"\n证据："+e.evidence+
+                (e.detail==null||e.detail.isEmpty()?"":"\n"+e.detail),12,AQUA,false);
+            evidence.setTextIsSelectable(true);evidence.setPadding(0,dp(8),0,dp(5));card.addView(evidence);
             String stamp;
             synchronized (timeFormat) { stamp = timeFormat.format(new Date(e.ts)); }
-            String metaText=stamp+"  ·  " +(e.rc==0?"成功":"错误 "+e.rc)+" · "
-                    +e.latency+" ms · UID "+e.uid+" · NetID "+e.net;
+            String metaText=stamp+"  ·  " +(observed?"未判定 DNS 成败":e.rc==0?"成功":"错误 "+e.rc)+" · "
+                    +(observed?"耗时未判定":e.latency+" ms")+" · UID "+e.uid+" · NetID "+e.net;
             TextView meta=text(metaText,11,MUTED,false);
             meta.setPadding(0,dp(7),0,0);card.addView(meta);
             card.setOnLongClickListener(v -> {
-                String value = e.host + (e.ips == null || e.ips.isEmpty() ? "" : "\n" + e.ips);
+                String value = e.host + "\n"+e.dnsType+"\n"+e.dnsServer+"\n"+e.evidence+"\n"+e.detail+(e.ips == null || e.ips.isEmpty() ? "" : "\n" + e.ips);
                 ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
                 if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("DNS lookup", value));
                 toast("已复制域名和解析结果");

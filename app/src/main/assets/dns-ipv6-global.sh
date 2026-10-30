@@ -59,8 +59,51 @@ rule_present() {
         if(mark && table)found=1
       } END {exit !found}'
 }
+seed_present() {
+    "$IP" -6 rule show 2>/dev/null | awk -v own="$APP_UID-$APP_UID" '
+      $1=="14990:" || $1=="14991:" {
+        dest="";who="";proto="";port="";tab="";iface=""
+        for(i=2;i<NF;i++){
+          if($i=="to")dest=$(i+1);if($i=="uidrange")who=$(i+1);if($i=="ipproto")proto=$(i+1)
+          if($i=="dport")port=$(i+1);if($i=="lookup")tab=$(i+1);if($i=="iif")iface=$(i+1)
+        }
+        if((who==own||who=="1-4294967294")&&port=="53"&&tab=="19754"&&iface=="lo"&&(dest=="2000::/3"||dest=="fc00::/7")&&
+           (($1=="14990:"&&(proto=="udp"||proto=="17"))||($1=="14991:"&&(proto=="tcp"||proto=="6"))))found=1
+      } END {exit !found}'
+}
+clear_seed() {
+    for range in "$APP_UID-$APP_UID" '1-4294967294'; do
+        for subnet in '2000::/3' 'fc00::/7'; do
+            "$IP" -6 rule del pref 14990 to "$subnet" iif lo uidrange "$range" ipproto udp dport 53 lookup "$TABLE" >/dev/null 2>&1 || true
+            "$IP" -6 rule del pref 14991 to "$subnet" iif lo uidrange "$range" ipproto tcp dport 53 lookup "$TABLE" >/dev/null 2>&1 || true
+        done
+    done
+}
+install_seed() {
+    range=$1
+    for subnet in '2000::/3' 'fc00::/7'; do
+        "$IP" -6 rule add pref 14990 to "$subnet" iif lo uidrange "$range" ipproto udp dport 53 lookup "$TABLE" || return 1
+        "$IP" -6 rule add pref 14991 to "$subnet" iif lo uidrange "$range" ipproto tcp dport 53 lookup "$TABLE" || return 1
+    done
+}
+seed_complete() {
+    expected=$1
+    "$IP" -6 rule show 2>/dev/null | awk -v uid="$expected" '
+      $1=="14990:" || $1=="14991:" {
+        dest="";who="";proto="";port="";tab="";iface=""
+        for(i=2;i<NF;i++){
+          if($i=="to")dest=$(i+1);if($i=="uidrange")who=$(i+1);if($i=="ipproto")proto=$(i+1)
+          if($i=="dport")port=$(i+1);if($i=="lookup")tab=$(i+1);if($i=="iif")iface=$(i+1)
+        }
+        if(who==uid && port=="53" && tab=="19754" && iface=="lo" && (dest=="2000::/3" || dest=="fc00::/7")){
+          if($1=="14990:"&&(proto=="udp"||proto=="17"))seen[dest "udp"]=1
+          if($1=="14991:"&&(proto=="tcp"||proto=="6"))seen[dest "tcp"]=1
+        }
+      }END{exit !(seen["2000::/3udp"]&&seen["2000::/3tcp"]&&seen["fc00::/7udp"]&&seen["fc00::/7tcp"])}'
+}
 clear_owned() {
-    owned || return 0
+    if ! owned && !seed_present; then return 0; fi
+    clear_seed
     del_jumps
     "$IP6" -w 1 -t mangle -F "$CHAIN" >/dev/null 2>&1 || true
     "$IP6" -w 1 -t mangle -X "$CHAIN" >/dev/null 2>&1 || true
@@ -82,6 +125,7 @@ verify_clean() {
     "$IP6" -w 1 -t mangle -S "$CHAIN" >/dev/null 2>&1 && bad=1
     rule_present && bad=1
     route_present && bad=1
+    seed_present && bad=1
     if [ "$bad" -eq 0 ]; then echo 'VERIFY_CLEAN: global module rules and routes absent'; return 0; fi
     echo 'VERIFY_FAILED: global module residue; manual cleanup required' >&2; return 1
 }
@@ -97,6 +141,8 @@ network_diagnostics() {
         echo "disable_ipv6.$iface=$(cat "$CONF/$iface/disable_ipv6" 2>/dev/null || echo unknown)"
     done
     "$IP" -6 addr show dev lo 2>&1 || true
+    "$IP" -6 rule show 2>&1 || true
+    "$IP" -6 route show table all 2>&1 || true
 }
 restore_loopback() {
     [ -f "$LO_STATE" ] || return 0
@@ -141,6 +187,25 @@ rollback_owned() {
     return 1
 }
 
+# Cheap comm prefilter avoids a tr/awk fork for every Android process.
+owned_root_pid() {
+    candidate=$1
+    [ -r "/proc/$candidate/comm" ] && [ -r "/proc/$candidate/status" ] || return 1
+    IFS= read -r comm < "/proc/$candidate/comm" || return 1
+    case "$comm" in dobs6_*|app_process|app_process32|app_process64) ;; *) return 1;; esac
+    owner=""
+    while read -r key real rest; do
+        if [ "$key" = Uid: ]; then owner=$real; break; fi
+    done < "/proc/$candidate/status"
+    [ "$owner" = 0 ] || return 1
+    cmd="$(tr '\000' ' ' < "/proc/$candidate/cmdline" 2>/dev/null)"
+    # Match an actual process name or exact Java argument, never a shell script containing text.
+    case "$cmd" in dobs6_*) return 0;; esac
+    for word in $cmd; do
+        [ "$word" = dev.yz.dnsobserver.DnsIpv6GlobalDaemon ] && return 0
+    done
+    return 1
+}
 case "$MODE" in
  stop-owned-daemons)
     # Explicit user STOP only. Kill exclusively DNS Observer global Root
@@ -151,14 +216,7 @@ case "$MODE" in
         pid="${proc##*/}"
         case "$pid" in ''|*[!0-9]*) continue;; esac
         [ "$pid" -gt 1 ] || continue
-        [ -r "$proc/cmdline" ] && [ -r "$proc/status" ] || continue
-        cmd="$(tr '\000' ' ' < "$proc/cmdline" 2>/dev/null)"
-        case "$cmd" in
-            *dev.yz.dnsobserver.DnsIpv6GlobalDaemon*|*dobs6_*) ;;
-            *) continue;;
-        esac
-        owner="$(awk '/^Uid:/ {print $2; exit}' "$proc/status" 2>/dev/null)"
-        [ "$owner" = 0 ] || continue
+        owned_root_pid "$pid" || continue
         pending="$pending $pid"
         if kill -TERM "$pid" 2>/dev/null; then
             count=$((count+1))
@@ -169,28 +227,14 @@ case "$MODE" in
     if [ "$count" -gt 0 ]; then sleep 1; fi
     remaining=0
     for pid in $pending; do
-        [ -r "/proc/$pid/cmdline" ] && [ -r "/proc/$pid/status" ] || continue
-        cmd="$(tr '\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null)"
-        case "$cmd" in
-            *dev.yz.dnsobserver.DnsIpv6GlobalDaemon*|*dobs6_*) ;;
-            *) continue;;
-        esac
-        owner="$(awk '/^Uid:/ {print $2; exit}' "/proc/$pid/status" 2>/dev/null)"
-        [ "$owner" = 0 ] || continue
+        owned_root_pid "$pid" || continue
         kill -KILL "$pid" 2>/dev/null || true
         remaining=$((remaining+1))
     done
     # SIGKILL request is not proof of exit. Check identity again before reporting clean.
     if [ "$remaining" -gt 0 ]; then sleep 1; fi
     for pid in $pending; do
-        [ -r "/proc/$pid/cmdline" ] && [ -r "/proc/$pid/status" ] || continue
-        cmd="$(tr '\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null)"
-        case "$cmd" in
-            *dev.yz.dnsobserver.DnsIpv6GlobalDaemon*|*dobs6_*) ;;
-            *) continue;;
-        esac
-        owner="$(awk '/^Uid:/ {print $2; exit}' "/proc/$pid/status" 2>/dev/null)"
-        [ "$owner" = 0 ] || continue
+        owned_root_pid "$pid" || continue
         echo "OWNED_DAEMON_STOP_FAILED: verified Root PID $pid remains" >&2
         exit 14
     done
@@ -228,6 +272,7 @@ case "$MODE" in
  check)
     [ "$(cat "$MARKER" 2>/dev/null)" = "global:$TOKEN" ] || { echo CHECK_FAILED: session marker mismatch; exit 1; }
     "$IP6" -w 1 -t mangle -S "$CHAIN" >/dev/null 2>&1 || { echo CHECK_FAILED: TPROXY chain missing; exit 1; }
+    seed_complete '1-4294967294' || { echo CHECK_FAILED: DNS initial-route policy missing; exit 1; }
     rule_present || { echo CHECK_FAILED: policy rule missing; "$IP" -6 rule show; exit 1; }
     route_present || { echo CHECK_FAILED: local loopback route missing; "$IP" -6 route show table "$TABLE"; exit 1; }
     for proto in udp tcp; do
@@ -248,6 +293,14 @@ case "$MODE" in
     "$IP" -6 route show table "$TABLE" 2>&1
     ;;
  install-probe)
+    # A foreign earlier unconditional block is an explicit policy; never bypass it.
+    if "$IP" -6 rule show | awk '$1 ~ /^[0-9]+:$/ {p=$1;sub(":","",p);if(p+0<14990 && $2=="from" && $3=="all" && $4=="unreachable")found=1} END{exit !found}'; then
+        echo 'PRECHECK_FAILED: IPV6_POLICY_BLOCKED: earlier unconditional unreachable rule; disable IPv6 blocking in its owning module' >&2
+        network_diagnostics >&2; exit 4
+    fi
+    if "$IP" -6 rule show | grep -Eq '^[[:space:]]*(14990|14991):'; then
+        echo 'PRECHECK_FAILED: reserved DNS initial-route policy occupied (14990/14991)' >&2; exit 4
+    fi
     # Never accept an existing marker, table, chain, pref or pre-used fwmark.
     if "$IP6" -w 1 -t mangle -S DO6TST55 >/dev/null 2>&1; then
         echo 'PRECHECK_FAILED: legacy IPv6 pilot chain present; recover pilot first' >&2; exit 4
@@ -291,6 +344,12 @@ case "$MODE" in
         rollback_owned; exit 7
     fi
     "$IP" -6 rule add pref "$PREF" fwmark "$MARK" lookup "$TABLE" || { rollback_owned; exit 8; }
+    if ! install_seed "$APP_UID-$APP_UID"; then
+        echo 'INSTALL_FAILED: precise UID/protocol/dport IPv6 policy unavailable; refusing broad route changes' >&2
+        rollback_owned; exit 8
+    fi
+    seed_complete "$APP_UID-$APP_UID" || { rollback_owned; exit 8; }
+    echo 'DNS_INITIAL_ROUTE: app UID UDP/TCP 53 only; no global IPv6 default route required'
     for proto in udp tcp; do
         "$IP6" -w 1 -t mangle -I PREROUTING 1 -i lo -p "$proto" --dport 53 -m mark --mark "$MARK" -j "$CHAIN" || { rollback_owned; exit 9; }
         for subnet in '2000::/3' 'fc00::/7'; do
@@ -308,6 +367,9 @@ case "$MODE" in
             "$IP6" -w 1 -t mangle -C OUTPUT -d "$subnet" -p "$proto" --dport 53 -m owner --uid-owner "$APP_UID" -j MARK --set-xmark "$MARK" >/dev/null 2>&1 || { echo 'PRECHECK_FAILED: selftest rule missing' >&2; exit 4; }
         done
     done
+    # Token and probe selectors checked before any promotion mutation.
+    clear_seed
+    if ! install_seed '1-4294967294'; then rollback_owned; exit 8; fi
     # Add broad rule only on explicit user opt-in AFTER successful selftest.
     # Root UID 0 excluded to prevent DNS forwarding recursion.
     for proto in udp tcp; do

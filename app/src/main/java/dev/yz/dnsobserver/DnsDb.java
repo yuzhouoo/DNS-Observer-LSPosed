@@ -20,7 +20,7 @@ import java.util.Locale;
 
 public final class DnsDb extends SQLiteOpenHelper {
     private static final String NAME = "dns_log.db";
-    private static final int VERSION = 3;
+    private static final int VERSION = 4;
     public static final int MAX_RECORDS = 20000;
     public static final int PAGE_SIZE = 120;
     private static final long KEEP_MS = 14L * 86400_000L;
@@ -35,7 +35,9 @@ public final class DnsDb extends SQLiteOpenHelper {
                 "net INTEGER NOT NULL, eventType INTEGER NOT NULL, rc INTEGER NOT NULL," +
                 "latency INTEGER NOT NULL," +
                 "appName TEXT NOT NULL DEFAULT '',dnsType TEXT NOT NULL DEFAULT '未知'," +
-                "dnsServer TEXT NOT NULL DEFAULT '未知',dnsSource TEXT NOT NULL DEFAULT '未观测')");
+                "dnsServer TEXT NOT NULL DEFAULT '未知',dnsSource TEXT NOT NULL DEFAULT '未观测',"+
+                "transport TEXT NOT NULL DEFAULT 'UNKNOWN',recordKind TEXT NOT NULL DEFAULT 'SYSTEM',"+
+                "evidence TEXT NOT NULL DEFAULT 'SYSTEM_EVENT',detail TEXT NOT NULL DEFAULT '',outcome TEXT NOT NULL DEFAULT 'COMPLETED')");
         db.execSQL("CREATE INDEX idx_dns_ts ON records(ts DESC)");
         db.execSQL("CREATE INDEX idx_dns_host ON records(host)");
         db.execSQL("CREATE INDEX idx_dns_uid ON records(uid)");
@@ -68,6 +70,13 @@ public final class DnsDb extends SQLiteOpenHelper {
             createUpstreamHistory(db);
         }
         if (from < 3) createProbeHistory(db);
+        if(from<4){
+            db.execSQL("ALTER TABLE records ADD COLUMN transport TEXT NOT NULL DEFAULT 'UNKNOWN'");
+            db.execSQL("ALTER TABLE records ADD COLUMN recordKind TEXT NOT NULL DEFAULT 'SYSTEM'");
+            db.execSQL("ALTER TABLE records ADD COLUMN evidence TEXT NOT NULL DEFAULT 'SYSTEM_EVENT'");
+            db.execSQL("ALTER TABLE records ADD COLUMN detail TEXT NOT NULL DEFAULT ''");
+            db.execSQL("ALTER TABLE records ADD COLUMN outcome TEXT NOT NULL DEFAULT 'COMPLETED'");
+        }
     }
 
     public synchronized void insertBatch(Context context, ArrayList<Bundle> events) {
@@ -92,6 +101,8 @@ public final class DnsDb extends SQLiteOpenHelper {
                 cv.put("dnsType", TextPolicy.clamp(item.getString("dnsType", "未知"), 70));
                 cv.put("dnsServer", TextPolicy.clamp(item.getString("dnsServer", "未知"), 350));
                 cv.put("dnsSource", TextPolicy.clamp(item.getString("dnsSource", "未观测"), 80));
+                for(String field:new String[]{"transport","recordKind","evidence","detail","outcome"})
+                    cv.put(field,TextPolicy.clamp(item.getString(field,field.equals("transport")?"UNKNOWN":field.equals("recordKind")?"SYSTEM":field.equals("evidence")?"SYSTEM_EVENT":field.equals("outcome")?"COMPLETED":""),field.equals("detail")?2500:80));
                 cv.put("host", host);
                 cv.put("ips", addr);
                 cv.put("total", item.getInt("total", 0));
@@ -113,7 +124,7 @@ public final class DnsDb extends SQLiteOpenHelper {
         Stats stat = new Stats();
         SQLiteDatabase db = getReadableDatabase();
         try (Cursor c = db.rawQuery("SELECT COUNT(*), COUNT(DISTINCT host), " +
-                "COALESCE(SUM(CASE WHEN rc != 0 THEN 1 ELSE 0 END),0) " +
+                "COALESCE(SUM(CASE WHEN rc != 0 AND outcome='COMPLETED' THEN 1 ELSE 0 END),0) " +
                 "FROM records", null)) {
             if (c.moveToFirst()) {
                 stat.total = c.getInt(0);
@@ -124,21 +135,28 @@ public final class DnsDb extends SQLiteOpenHelper {
         return stat;
     }
 
-    public synchronized List<Entry> latest(String keyword, int filter) {
+    public synchronized List<Entry> latest(String keyword,int filter){return latest(keyword,filter,"全部");}
+    public synchronized List<Entry> latest(String keyword, int filter,String protocol) {
         List<Entry> result = new ArrayList<>();
         String sql = "SELECT ts,uid,packages,host,ips,total,net,eventType,rc,latency " +
-                " ,appName,dnsType,dnsServer,dnsSource FROM records WHERE 1=1";
+                " ,appName,dnsType,dnsServer,dnsSource,transport,recordKind,evidence,detail,outcome FROM records WHERE 1=1";
         ArrayList<String> args = new ArrayList<>();
-        if (filter == 1) sql += " AND rc = 0";
-        if (filter == 2) sql += " AND rc != 0";
+        if (filter == 1) sql += " AND rc = 0 AND outcome='COMPLETED'";
+        if (filter == 2) sql += " AND rc != 0 AND outcome='COMPLETED'";
+        if(protocol!=null&&!"全部".equals(protocol)){
+            if("系统解析".equals(protocol))sql+=" AND recordKind='SYSTEM'";
+            else if("关键词 / 疑似".equals(protocol))sql+=" AND (transport IN ('SUSPECTED','DoT?') OR evidence='HTTP_API_KEYWORD')";
+            else if("协议未知".equals(protocol))sql+=" AND transport='UNKNOWN'";
+            else {sql+=" AND transport=?";args.add(protocol);}
+        }
         if (keyword != null && !keyword.trim().isEmpty()) {
             // Escape LIKE wildcards so searching '_' or '%' means literal text.
             String needle = keyword.trim().replace("\\", "\\\\")
                     .replace("%", "\\%").replace("_", "\\_");
             sql += " AND (host LIKE ? ESCAPE '\\' OR packages LIKE ? ESCAPE '\\' " +
                     "OR ips LIKE ? ESCAPE '\\' OR appName LIKE ? ESCAPE '\\' " +
-                    "OR dnsServer LIKE ? ESCAPE '\\')";
-            for (int i = 0; i < 5; i++) args.add("%" + needle + "%");
+                    "OR dnsServer LIKE ? ESCAPE '\\' OR detail LIKE ? ESCAPE '\\' OR evidence LIKE ? ESCAPE '\\')";
+            for (int i = 0; i < 7; i++) args.add("%" + needle + "%");
         }
         sql += " ORDER BY id DESC LIMIT " + PAGE_SIZE;
         try (Cursor c = getReadableDatabase().rawQuery(sql, args.toArray(new String[0]))) {
@@ -150,6 +168,7 @@ public final class DnsDb extends SQLiteOpenHelper {
                 e.latency = c.getInt(9);
                 e.appName=c.getString(10); e.dnsType=c.getString(11);
                 e.dnsServer=c.getString(12); e.dnsSource=c.getString(13);
+                e.transport=c.getString(14);e.recordKind=c.getString(15);e.evidence=c.getString(16);e.detail=c.getString(17);e.outcome=c.getString(18);
                 result.add(e);
             }
         }
@@ -210,17 +229,17 @@ public final class DnsDb extends SQLiteOpenHelper {
         // Output data is local to a user-selected Storage Access Framework URI.
         BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(out, StandardCharsets.UTF_8));
         writer.write('\ufeff');
-        writer.write("time,uid,packages,appName,hostname,ipAddresses,totalIpCount,netId,eventType,returnCode,latencyMs,dnsType,dnsServer,dnsSource\n");
+        writer.write("time,uid,packages,appName,hostname,ipAddresses,totalIpCount,netId,eventType,returnCode,latencyMs,dnsType,dnsServer,dnsSource,transport,recordKind,evidence,detail,outcome\n");
         SimpleDateFormat date = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault());
         try (Cursor c = getReadableDatabase().rawQuery(
-                "SELECT ts,uid,packages,host,ips,total,net,eventType,rc,latency,appName,dnsType,dnsServer,dnsSource FROM records ORDER BY id DESC", null)) {
+                "SELECT ts,uid,packages,host,ips,total,net,eventType,rc,latency,appName,dnsType,dnsServer,dnsSource,transport,recordKind,evidence,detail,outcome FROM records ORDER BY id DESC", null)) {
             while (c.moveToNext()) {
                 String[] values = {
                         date.format(new Date(c.getLong(0))), String.valueOf(c.getInt(1)),
                         c.getString(2), c.getString(10), c.getString(3), c.getString(4),
                         String.valueOf(c.getInt(5)), String.valueOf(c.getInt(6)),
                         String.valueOf(c.getInt(7)), String.valueOf(c.getInt(8)),
-                        String.valueOf(c.getInt(9)),c.getString(11),c.getString(12),c.getString(13)
+                        String.valueOf(c.getInt(9)),c.getString(11),c.getString(12),c.getString(13),c.getString(14),c.getString(15),c.getString(16),c.getString(17),c.getString(18)
                 };
                 for (int i = 0; i < values.length; i++) {
                     if (i != 0) writer.write(',');
@@ -310,6 +329,6 @@ public final class DnsDb extends SQLiteOpenHelper {
     public static final class Entry {
         public long ts;
         public int uid, total, net, type, rc, latency;
-        public String packages, appName, host, ips, dnsType, dnsServer, dnsSource;
+        public String packages, appName, host, ips, dnsType, dnsServer, dnsSource,transport,recordKind,evidence,detail,outcome;
     }
 }

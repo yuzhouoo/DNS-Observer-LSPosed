@@ -6,7 +6,10 @@ source=Path('app/src/main/assets/dns-ipv6-global.sh').read_text()
 with TemporaryDirectory() as t:
     root=Path(t);proc=root/'proc';proc.mkdir()
     for pid,cmd,uid in [('901','dobs6_owned',0),('902','unrelated_root_service',0),('903','dobs6_other_uid',10001)]:
-        d=proc/pid;d.mkdir();(d/'cmdline').write_bytes(cmd.encode()+b'\0');(d/'status').write_text(f'Uid:\t{uid}\t{uid}\t{uid}\t{uid}\n')
+        d=proc/pid;d.mkdir();(d/'comm').write_text(cmd[:15]+'\n');(d/'cmdline').write_bytes(cmd.encode()+b'\0');(d/'status').write_text(f'Uid:\t{uid}\t{uid}\t{uid}\t{uid}\n')
+    # Hundreds of unrelated processes must not require cmdline subprocesses.
+    for n in range(1000,2000):
+        d=proc/str(n);d.mkdir();(d/'comm').write_text('unrelated\n');(d/'status').write_text('Uid: 0 0 0 0\n')
     for command in ['ip','ip6tables']:
         f=root/command;f.write_text('#!/bin/sh\nexit 0\n');f.chmod(0o755)
     script=root/'stop.sh'

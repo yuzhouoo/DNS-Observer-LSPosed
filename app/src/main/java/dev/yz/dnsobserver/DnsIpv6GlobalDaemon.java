@@ -84,7 +84,14 @@ public final class DnsIpv6GlobalDaemon {
             throw new IllegalStateException("Invalid UDP peer");
         return new UdpMessage(Arrays.copyOf(payload.array(),n),client,target);
     }
+    private static long detailSecond;private static int detailCount;
+    private static synchronized void observation(byte[] q,byte[] a,String protocol,String endpoint,long began){
+        long second=System.nanoTime()/1000000000L;if(second!=detailSecond){detailSecond=second;detailCount=0;}if(++detailCount>25)return;
+        if(q==null||q.length>4096||a==null||a.length<4)return;
+        System.out.println("DNSOBS|"+protocol+"|"+java.util.Base64.getEncoder().encodeToString(q)+"|"+(a[3]&15)+"|"+endpoint+"|"+((System.nanoTime()-began)/1000000L)+"|"+java.util.Base64.getEncoder().encodeToString(a));System.out.flush();
+    }
     private static byte[] forward(byte[] request,String protocol,Endpoint[] targets) {
+        long began=System.nanoTime();
         if(!DnsPacket.validQuestion(request))return null;
         received.incrementAndGet();
         for(int i=0;i<targets.length;i++) {
@@ -93,12 +100,12 @@ public final class DnsIpv6GlobalDaemon {
                 byte[] result=DnsUpstreamExchange.query(e.ip,e.port,protocol,request);
                 consecutiveFailures=0;
                 if(i>0)log("FAILOVER_OK protocol="+protocol+" index="+i);
-                return result;
+                observation(request,result,protocol,protocol+" "+e.ip.getHostAddress()+":"+e.port,began);return result;
             }catch(Exception ex){log("UPSTREAM_FAIL protocol="+protocol+" index="+i+" error="+ex.getClass().getSimpleName());}
         }
         errors.incrementAndGet();
         if(++consecutiveFailures%6==0)log("UNHEALTHY: repeated upstream failures="+consecutiveFailures);
-        return DnsPacket.servfail(request);
+        byte[] failed=DnsPacket.servfail(request);observation(request,failed,protocol,"上游全部失败",began);return failed;
     }
     private static void respondUdp(UdpMessage message,byte[] reply)throws Exception {
         // Temporary per-request transparent reply socket: avoids spoofing the fixed

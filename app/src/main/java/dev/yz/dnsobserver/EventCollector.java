@@ -41,6 +41,7 @@ public final class EventCollector {
     public synchronized void start(Context systemContext) {
         if (context != null || systemContext == null) return;
         context = systemContext;
+        HttpObservationHooks.attach(systemContext);
         HandlerThread t = new HandlerThread("DnsObserverWriter", Process.THREAD_PRIORITY_BACKGROUND);
         t.start();
         worker = new Handler(t.getLooper());
@@ -76,6 +77,27 @@ public final class EventCollector {
         }
     }
 
+    public void auxiliary(Bundle event){
+        synchronized(this){if(pending.size()>=MAX_QUEUE){pending.removeFirst();dropped++;}pending.addLast(event);}
+    }
+    private final java.util.concurrent.ConcurrentHashMap<String,Long> privateEndpoints=new java.util.concurrent.ConcurrentHashMap<>();
+    public void connection(int net,int error,int latency,String ip,int port,int uid){
+        Long validated=privateEndpoints.get(ip);
+        if(port!=853&&!(port==443&&validated!=null&&android.os.SystemClock.elapsedRealtime()-validated<1800000))return;
+        Bundle b=new Bundle();b.putLong("ts",System.currentTimeMillis());b.putString("host",ip);
+        b.putInt("uid",uid);b.putInt("net",net);b.putInt("rc",error);b.putInt("latency",latency);
+        b.putString("recordKind","CONNECTION");b.putString("outcome","OBSERVED");b.putString("transport","SUSPECTED");
+        b.putString("dnsType",port==853?"疑似加密 DNS：853 连接（DoT/DoQ 未区分）":"已验证 DNS 服务器的 443 连接（可能 DoH，未确认）");b.putString("dnsServer",ip+":"+port);
+        b.putString("evidence",port==853?"CONNECT_PORT_853":"CONNECT_PRIVATE_DNS_443");b.putString("detail","connect 返回="+error+"；未观察到 TLS 内部查询内容，也不据此判断 DNS 成败");auxiliary(b);
+    }
+    public void validation(int net,String ip,String host,boolean valid){
+        if(ip!=null){if(privateEndpoints.size()>64)privateEndpoints.clear();if(valid)privateEndpoints.put(ip,android.os.SystemClock.elapsedRealtime());else privateEndpoints.remove(ip);}
+        Bundle b=new Bundle();b.putLong("ts",System.currentTimeMillis());b.putString("host",host==null||host.isEmpty()?ip:host);
+        b.putInt("uid",1000);b.putInt("net",net);b.putInt("rc",valid?0:1);b.putString("recordKind","VALIDATION");
+        b.putString("transport","UNKNOWN");b.putString("evidence","PRIVATE_DNS_VALIDATION");
+        b.putString("dnsType","私人 DNS 验证事件（非逐查询协议）");b.putString("dnsServer",ip);
+        b.putString("detail","私人 DNS 验证="+valid);auxiliary(b);
+    }
     private static String[] describeNetwork(Context ctx) {
         try {
             ConnectivityManager cm=(ConnectivityManager)ctx.getSystemService(Context.CONNECTIVITY_SERVICE);
@@ -90,7 +112,7 @@ public final class EventCollector {
             }
             boolean dot=p.isPrivateDnsActive();
             String privateName=p.getPrivateDnsServerName();
-            String kind=dot?"私人 DNS 已启用（DoT 配置）":"系统解析器（传输协议未证实）";
+            String kind=dot?"私人 DNS 加密配置已启用（协议未证实）":"系统解析器（传输协议未证实）";
             if(dot && privateName!=null && !privateName.isEmpty()) {
                 if(servers.length()>0)servers.append(" | ");
                 servers.append("Private DNS: ").append(privateName);
@@ -117,11 +139,9 @@ public final class EventCollector {
                 if (ctx != null) {
                     // UID -> packages resolved on this background thread with system privileges.
                     // Package visibility restrictions on the UI app cannot hide package names.
-                    String[] netInfo = describeNetwork(ctx);
+                    // Provider enriches each event by its own NetID, not one batch-wide default network.
                     for (Bundle event : batch) {
-                        event.putString("dnsType",netInfo[0]);
-                        event.putString("dnsServer",netInfo[1]);
-                        event.putString("dnsSource",netInfo[2]);
+
                         int uid = event.getInt("uid", -1);
                         String[] names = ctx.getPackageManager().getPackagesForUid(uid);
                         if (names != null && names.length > 0) {

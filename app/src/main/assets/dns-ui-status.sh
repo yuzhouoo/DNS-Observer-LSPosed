@@ -11,7 +11,7 @@ if rules=$(iptables -w 2 -t nat -S 2>/dev/null); then
 else echo V4=unknown; fi
 # If mangle is unavailable but IPv6 is fully disabled, IPv6 rules still remain unknown.
 if rules=$(ip6tables -w 2 -t mangle -S 2>/dev/null) && routes=$(ip -6 rule show 2>/dev/null); then
-    if printf '%s\n%s\n' "$rules" "$routes" | grep -Eq '(^|[[:space:]])(DO6G061|DO6TST55)([[:space:]]|$)|^[[:space:]]*(15010|15000):|(^|[[:space:]])(0x40000000|0x20000000)(/[^[:space:]]+)?([[:space:]]|$)' ||
+    if printf '%s\n%s\n' "$rules" "$routes" | grep -Eq '(^|[[:space:]])(DO6G061|DO6TST55)([[:space:]]|$)|^[[:space:]]*(14990|14991|15010|15000):|(^|[[:space:]])(0x40000000|0x20000000)(/[^[:space:]]+)?([[:space:]]|$)' ||
        [ -f "/data/adb/dnsobserver-v6-lo_${uid}" ] || [ -f "/data/local/tmp/dobs6g61_${uid}.run" ] || [ -f "/data/local/tmp/dobs6t55_${uid}.run" ]; then
         echo V6=present
     else

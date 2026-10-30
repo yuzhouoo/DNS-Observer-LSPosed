@@ -287,7 +287,15 @@ public final class DnsForwardService extends Service {
     private int portFor(int role) {return role==0?port:role==1?subPort:secondaryPort;}
     private String hostFor(int role) {return role==0?host:role==1?subHost:secondaryHost;}
 
-    private byte[] forward(byte[] request, boolean tcp) throws Exception {
+    private final ThreadLocal<String> lastExchange=ThreadLocal.withInitial(()->"上游未确定");
+    private byte[] forward(byte[] request,boolean tcp)throws Exception{
+        long began=android.os.SystemClock.elapsedRealtime();lastExchange.set("上游未确定");
+        try{byte[] response=forwardInternal(request,tcp);
+            DnsObservationStore.proxy(this,request,response,tcp?"TCP":"UDP",lastExchange.get(),android.os.SystemClock.elapsedRealtime()-began,"");return response;
+        }catch(Exception error){DnsObservationStore.proxy(this,request,DnsPacket.servfail(request),tcp?"TCP":"UDP",lastExchange.get(),android.os.SystemClock.elapsedRealtime()-began,error.getClass().getSimpleName());throw error;}
+        finally{lastExchange.remove();}
+    }
+    private byte[] forwardInternal(byte[] request, boolean tcp) throws Exception {
         if(!DnsPacket.validQuestion(request))return DnsPacket.servfail(request);
         final int initiallyActive=rolePolicy.current();
         Exception last=null;
@@ -328,6 +336,7 @@ public final class DnsForwardService extends Service {
         return forwardUdp(address,req,port);
     }
     private byte[] forwardUdp(InetAddress address, byte[] req,int targetPort) throws Exception {
+        lastExchange.set("UDP "+address.getHostAddress()+":"+targetPort);
         try (DatagramSocket socket = new DatagramSocket()) {
             socket.connect(new InetSocketAddress(address, targetPort));
             socket.setSoTimeout(TIMEOUT);
@@ -347,6 +356,7 @@ public final class DnsForwardService extends Service {
         return forwardTcp(address,request,port);
     }
     private byte[] forwardTcp(InetAddress address, byte[] request,int targetPort) throws Exception {
+        lastExchange.set("TCP "+address.getHostAddress()+":"+targetPort);
         try (Socket socket = new Socket()) {
             socket.connect(new InetSocketAddress(address, targetPort), TIMEOUT);
             socket.setSoTimeout(TIMEOUT);

@@ -78,6 +78,9 @@ jobs:
             tests/stubs/android/content/Context.java \
             tests/RootScriptFilesTest.java \
             tests/DnsPacketTest.java \
+            app/src/main/java/dev/yz/dnsobserver/DnsObservation.java \
+            tests/DnsObservationTest.java \
+            tests/DnsBootstrapFallbackTest.java \
             tests/DnsUpstreamExchangeTest.java \
             tests/DnsProbeTest.java \
             app/src/main/java/dev/yz/dnsobserver/DnsIcmpProbe.java \
@@ -90,6 +93,8 @@ jobs:
           java -cp /tmp/dnsobserver-jvm dev.yz.dnsobserver.DnsTcpAcceptLoopTest
           java -cp /tmp/dnsobserver-jvm dev.yz.dnsobserver.RootScriptFilesTest
           java -cp /tmp/dnsobserver-jvm dev.yz.dnsobserver.DnsFeatureStateTest
+          java -cp /tmp/dnsobserver-jvm dev.yz.dnsobserver.DnsObservationTest
+          java -cp /tmp/dnsobserver-jvm dev.yz.dnsobserver.DnsBootstrapFallbackTest
           java -cp /tmp/dnsobserver-jvm dev.yz.dnsobserver.DnsPacketTest
           java -cp /tmp/dnsobserver-jvm dev.yz.dnsobserver.DnsUpstreamExchangeTest
           java -cp /tmp/dnsobserver-jvm dev.yz.dnsobserver.DnsProbeTest
@@ -126,11 +131,11 @@ jobs:
           print('Verified: Modern API 102 resources included; no legacy entry')
           PY
       - name: Package complete source snapshot
-        run: git archive --format=zip --output=DNSObserver-v0.6.4-beta10-source.zip HEAD
+        run: git archive --format=zip --output=DNSObserver-v0.6.4-beta11-source.zip HEAD
       - uses: actions/upload-artifact@v4
         with:
-          name: DNSObserver-v0.6.4-beta10-source
-          path: DNSObserver-v0.6.4-beta10-source.zip
+          name: DNSObserver-v0.6.4-beta11-source
+          path: DNSObserver-v0.6.4-beta11-source.zip
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:

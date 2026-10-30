@@ -38,11 +38,12 @@ public final class DnsBootstrap {
         catch(IllegalArgumentException ignored) { /* hostname */ }
         InetAddress bootstrap = parseLiteral(backupIp == null ? "" : backupIp.trim());
         List<InetAddress> found = new ArrayList<>();
+        StringBuilder reasons=new StringBuilder();
         for (int rr : new int[]{1, 28}) {
             try { found.addAll(resolveViaIp(host, bootstrap, rr)); }
-            catch (Exception ignored) { }
+            catch (Exception error) {reasons.append(rr==1?" A: ":" AAAA: ").append(error.getClass().getSimpleName()).append(" ").append(error.getMessage());}
         }
-        if (found.isEmpty()) throw new IllegalStateException("Bootstrap 纯 IP DNS 无响应");
+        if (found.isEmpty()) throw new IllegalStateException("Bootstrap "+bootstrap.getHostAddress()+":53 无有效地址响应；已尝试 UDP/TCP。"+reasons);
         return found.toArray(new InetAddress[0]);
     }
 
@@ -66,7 +67,8 @@ public final class DnsBootstrap {
         throw new IllegalArgumentException("Bootstrap DNS 必须为纯 IPv4/IPv6 地址");
     }
 
-    static List<InetAddress> resolveViaIp(String host, InetAddress dns, int type) throws Exception {
+    static List<InetAddress> resolveViaIp(String host, InetAddress dns, int type) throws Exception {return resolveViaIp(host,dns,type,53);}
+    static List<InetAddress> resolveViaIp(String host, InetAddress dns, int type,int dnsPort) throws Exception {
         int id = ThreadLocalRandom.current().nextInt(65536);
         ByteArrayOutputStream raw = new ByteArrayOutputStream();
         raw.write(id >> 8); raw.write(id);
@@ -81,14 +83,14 @@ public final class DnsBootstrap {
         }
         raw.write(0); raw.write(0); raw.write(type); raw.write(0); raw.write(1);
         byte[] query = raw.toByteArray();
-        try (DatagramSocket s = new DatagramSocket()) {
-            s.connect(new InetSocketAddress(dns, 53));
-            s.setSoTimeout(2500);
-            s.send(new DatagramPacket(query, query.length));
-            byte[] response = new byte[4096];
-            DatagramPacket p = new DatagramPacket(response, response.length);
-            s.receive(p);
-            int len=p.getLength();
+        byte[] response;
+        try {response=DnsUpstreamExchange.query(dns,dnsPort,"UDP",query);}
+        catch(Exception udp){
+            try {response=DnsUpstreamExchange.query(dns,dnsPort,"TCP",query);}
+            catch(Exception tcp){throw new java.io.IOException("UDP="+udp.getMessage()+"; TCP="+tcp.getMessage(),tcp);}
+        }
+        {
+            int len=response.length;
             if (len<12 || u16(response,0)!=id || (response[2]&0x80)==0
                     || (response[3]&15)!=0 || (response[2]&2)!=0) return Collections.emptyList();
             int qd=u16(response,4), an=u16(response,6);

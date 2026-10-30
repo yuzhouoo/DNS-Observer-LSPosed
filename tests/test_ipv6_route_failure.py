@@ -8,7 +8,7 @@ with TemporaryDirectory() as tmp:
     for name,value in [('all',0),('default',0),('lo',1)]:
         (conf/name).mkdir(parents=True);(conf/name/'disable_ipv6').write_text(str(value)+'\n')
     state=root/'rules.json'
-    empty={'chain':False,'entries':[],'route':False,'rule':False}
+    empty={'chain':False,'entries':[],'route':False,'rule':False,'seeds':[]}
     state.write_text(json.dumps(empty))
     def stub(name,body):
         p=root/name;p.write_text('#!/usr/bin/env python3\n'+body);p.chmod(0o755)
@@ -51,7 +51,16 @@ if 'route' in a:
  elif 'del' in a:s['route']=False
 if 'rule' in a:
  if 'show' in a:
+  if os.environ.get('BLOCK_EARLY')=='1':print('100: from all unreachable')
+  for seed in s['seeds']:print(seed)
   if s['rule']:print('15010: from all fwmark 0x40000000/0x40000000 lookup 19754')
+ elif 'dport' in a:
+  pref=a[a.index('pref')+1];uid=a[a.index('uidrange')+1];proto=a[a.index('ipproto')+1]
+  entry=pref+': from all to '+a[a.index('to')+1]+' iif lo uidrange '+uid+' ipproto '+proto+' dport 53 lookup 19754'
+  if 'add' in a:
+   if os.environ.get('NO_PORT_RULE')=='1':sys.exit(2)
+   s['seeds'].append(entry)
+  elif entry in s['seeds']:s['seeds'].remove(entry)
  elif 'add' in a:s['rule']=True
  elif 'del' in a:s['rule']=False
 p.write_text(json.dumps(s))
@@ -67,13 +76,26 @@ p.write_text(json.dumps(s))
             env=dict(env,**extra),text=True,capture_output=True,timeout=30)
     def snap():return json.loads(state.read_text())
     lo=conf/'lo/disable_ipv6';lease=root/'lo_12345'
+    blocked=call('install-probe',BLOCK_EARLY='1');assert blocked.returncode==4 and 'IPV6_POLICY_BLOCKED' in blocked.stderr and snap()==empty
     r=call('install-probe');assert r.returncode==0,(r.stdout,r.stderr)
     assert 'LOOPBACK_TEMP_ENABLED' in r.stdout and lo.read_text().strip()=='0'
     assert snap()['route'] and snap()['rule'] and lease.exists()
+    assert len(snap()['seeds'])==4
+    assert all('dport 53' in x and 'uidrange 12345-12345' in x and ('to 2000::/3' in x or 'to fc00::/7' in x) for x in snap()['seeds'])
+    before=snap()
+    # A wrong token may not mutate an existing probe's exact UID policy.
+    wrong=subprocess.run(['sh','-c',script,'--','promote','12345','wrongtoken',str(os.getpid())],env=env,capture_output=True,text=True)
+    assert wrong.returncode!=0 and snap()==before
+
     r=call('promote');assert r.returncode==0,(r.stdout,r.stderr)
     r=call('check');assert r.returncode==0,(r.stdout,r.stderr)
+    complete=snap();broken=json.loads(json.dumps(complete));broken['seeds'].pop();state.write_text(json.dumps(broken))
+    assert call('check').returncode!=0
+    state.write_text(json.dumps(complete))
     r=call('recover');assert r.returncode==0,(r.stdout,r.stderr)
     assert snap()==empty and lo.read_text().strip()=='1' and not lease.exists()
+    r=call('install-probe',NO_PORT_RULE='1');assert r.returncode!=0
+    assert snap()==empty and not lease.exists()
     # iproute2 prints ::/0 as default; both renderings must check and clean identically.
     for text in ['local default dev lo metric 1024 pref medium',
                  'local ::/0 proto static dev lo table 19754 metric 1024']:

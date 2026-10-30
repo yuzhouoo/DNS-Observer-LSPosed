@@ -109,7 +109,9 @@ public final class DnsIpv6GlobalController {
             String host=hosts[i]==null?"":hosts[i].trim();if(host.isEmpty())continue;
             int port=Integer.parseInt(prefs.getString(ports[i],"31017").trim());
             if(port<1||port>65535)throw new IllegalArgumentException(names[i]+"端口不合法");
-            InetAddress[] addresses=DnsBootstrap.resolve(host,prefs.getString("bootstrap",""));
+            InetAddress[] addresses;
+            try{addresses=DnsBootstrap.resolve(host,prefs.getString("bootstrap",""));}
+            catch(Exception error){log(ctx,"上游预检 "+names[i]+" Bootstrap 失败："+error.getMessage());continue;}
             boolean ready=false;
             for(int n=0;n<Math.min(addresses.length,6);n++){
                 ensureAllowed(allowed);
@@ -166,6 +168,7 @@ public final class DnsIpv6GlobalController {
                         if(line.startsWith("DNS6GLOBAL TCP_LISTENER_RECOVERING")||line.startsWith("DNS6GLOBAL TCP_LISTENER_FATAL")||line.startsWith("DNS6GLOBAL STOP"))tcpReady=false;
                         if(line.startsWith("DNS6GLOBAL TCP_LISTENER_RECOVERED"))tcpReady=true;
                     }
+                    if(process==p&&line.startsWith("DNSOBS|")){DnsObservationStore.rootLine(ctx,line);continue;}
                     // Only meaningful events; no per-success log flood.
                     if(line.startsWith("DNS6GLOBAL READY")||line.startsWith("DNS6GLOBAL ERROR")||
                             line.startsWith("DNS6GLOBAL STOP")||line.contains("ERROR")||
@@ -306,7 +309,7 @@ public final class DnsIpv6GlobalController {
             String result;boolean daemonConfirmed=true;
             // Explicit STOP is allowed to clean an older orphaned DNS Observer
             // Root listener after the app's original su wrapper was lost.
-            try {log(ctx,root(ctx,"stop-owned-daemons","cleanup",12));}
+            try {log(ctx,root(ctx,"stop-owned-daemons","cleanup",20));}
             catch(Exception ex){daemonConfirmed=false;log(ctx,"旧 Root 代理进程核查失败："+ex.getMessage());}
             try{result=root(ctx,"recover","cleanup",14);ownsRules=false;promoted=false;}
             catch(Exception ex){result="RECOVERY_FAILED: "+ex.getMessage();}
