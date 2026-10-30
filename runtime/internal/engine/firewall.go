@@ -82,6 +82,15 @@ func (f *Firewall) seed(fam, op string) error {
 	return last
 }
 func (f *Firewall) Preflight(cfg Config) error {
+	if cfg.IPv4 {
+		s, e := f.ip("4", "addr", "show", "dev", "lo")
+		if e != nil {
+			return e
+		}
+		if strings.Contains(s, "198.18.254.1/") {
+			return errors.New("保留 loopback IPv4 地址被占用")
+		}
+	}
 	if cfg.IPv6 {
 		s, e := f.ip("6", "addr", "show", "dev", "lo")
 		if e != nil {
@@ -243,6 +252,12 @@ func (f *Firewall) Install(cfg Config, probe bool) error {
 			}
 		}
 		route := []string{"route", "add", "local", "default", "dev", "lo", "table", Table}
+		if fam == "4" {
+			if _, e := f.ip(fam, "addr", "add", "198.18.254.1/32", "dev", "lo"); e != nil {
+				return e
+			}
+			route = append(route, "src", "198.18.254.1")
+		}
 		if fam == "6" {
 			if _, e := f.ip(fam, "addr", "add", "fd53:7974:6f6e::1/128", "dev", "lo"); e != nil {
 				return e
@@ -357,6 +372,16 @@ func (f *Firewall) Cleanup() error {
 		f.seed(fam, "del")
 		f.ip(fam, "rule", "del", "pref", "9100", "fwmark", Capture, "lookup", Table)
 		f.ip(fam, "route", "del", "local", "default", "dev", "lo", "table", Table)
+		if fam == "4" {
+			s, e := f.ip(fam, "addr", "show", "dev", "lo")
+			if e != nil {
+				errs = append(errs, e.Error())
+			} else if strings.Contains(s, "198.18.254.1/") {
+				if _, e = f.ip(fam, "addr", "del", "198.18.254.1/32", "dev", "lo"); e != nil {
+					errs = append(errs, e.Error())
+				}
+			}
+		}
 		if fam == "6" {
 			s, e := f.ip(fam, "addr", "show", "dev", "lo")
 			if e != nil {
@@ -414,8 +439,12 @@ func (f *Firewall) Check(cfg Config) error {
 		if e := f.blocked(fam); e != nil {
 			return e
 		}
-		for _, x := range []struct{ parent, name string }{{"OUTPUT", chain("OUT")}, {"PREROUTING", chain("PRE")}} {
-			s, e := f.R.Run(iptablesFor(fam), "-w", "1", "-t", "mangle", "-S", x.parent)
+		parents := []struct{ table, parent, name string }{{"mangle", "OUTPUT", chain("OUT")}, {"mangle", "PREROUTING", chain("PRE")}, {"filter", "INPUT", chain("IN")}}
+		if cfg.Block853 {
+			parents = append(parents, struct{ table, parent, name string }{"filter", "OUTPUT", chain("TLS")})
+		}
+		for _, x := range parents {
+			s, e := f.R.Run(iptablesFor(fam), "-w", "1", "-t", x.table, "-S", x.parent)
 			if e != nil {
 				return e
 			}

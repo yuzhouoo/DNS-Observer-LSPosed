@@ -42,6 +42,9 @@ func (c *Core) prepareAt(cfg Config, match, path string) (string, error) {
 	if e != nil {
 		return "", fmt.Errorf("Mihomo 核心不存在: %w", e)
 	}
+	if stat, ok := st.Sys().(*syscall.Stat_t); !ok || stat.Uid != 0 {
+		return "", errors.New("Mihomo 核心必须为 Root 所有；可使用 APK 导入核心")
+	}
 	if !st.Mode().IsRegular() || st.Mode().Perm()&0022 != 0 {
 		return "", errors.New("Mihomo 核心必须为普通文件且不能允许组/其他用户写入，请 chmod 700")
 	}
@@ -102,7 +105,7 @@ func (c *Core) prepareAt(cfg Config, match, path string) (string, error) {
 	if e != nil {
 		c.Log.Event("CORE_CONFIG_REJECTED", "validation failed; see core-validate.log (may contain provider URLs)")
 		Atomic(c.Home+"/logs/core-validate.log", out, 0600)
-		return "", errors.New("Mihomo -t 配置校验失败，完整诊断在受保护的 core-validate.log")
+		return "", fmt.Errorf("Mihomo -t 校验失败: %w；完整输出在受保护的 core-validate.log", e)
 	}
 	return path, nil
 }
