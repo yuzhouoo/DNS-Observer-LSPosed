@@ -223,7 +223,7 @@ public final class DnsControlActivity extends Activity {
             (snapshot!=null&&!snapshot.error.isEmpty()?"\n"+snapshot.error:"")+(!fresh&&checkedAt>0?" · 结果已过期 / 状态已变化":"")+
             (fresh&&v4==DnsFeatureState.ERROR?"\nIPv4："+snapshot.detail4:"")+
             (fresh&&v6==DnsFeatureState.ERROR?"\nIPv6："+snapshot.detail6:"")+
-            (requested&&"idle".equals(current)?"\n接管会话未运行（可能为覆盖安装或进程重建）；请先关闭清理，再重新开启。":""));
+            (requested&&"idle".equals(current)?"\n保存的开启意图与当前运行状态不一致：接管服务未运行。可能为覆盖安装或进程退出，并非已确认网络故障。请先关闭清理；若日志含 IPV6_POLICY_BLOCKED，请先关闭其他模块的 IPv6 阻断，再开启接管。":""));
         boolean lifecycleBusy="starting".equals(current)||"stopping".equals(current);
         boolean session=requested || !"idle".equals(current) || (fresh&&(snapshot.active4||snapshot.active6));
         boolean lockConfig=session||lifecycleBusy||ipv6Busy||measuring;

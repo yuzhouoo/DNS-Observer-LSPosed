@@ -296,6 +296,8 @@ public final class DnsIpv6GlobalController {
                         if(rollbackConfirmed){ownsRules=false;promoted=false;}
                     }catch(Exception ex){log(app,"清理未确认："+ex.toString());}
                 }
+                if(error.getMessage()!=null && error.getMessage().contains("IPV6_POLICY_BLOCKED"))
+                    return "启动被系统路由阻断：检测到更早的 IPv6 全局 unreachable 规则。请关闭 Box 或其他模块的 IPv6 阻断 / 仅 IPv4 模式，并在模块重启后刷新检查；本次未安装接管规则。";
                 return "未开启 IPv6 全局 DNS，"+(rollbackNeeded?(rollbackConfirmed?"已验证回滚":"回滚未确认，请执行关闭清理"):"未安装本次规则")+"："+error.getMessage();
             }finally{starting=false;}
         }

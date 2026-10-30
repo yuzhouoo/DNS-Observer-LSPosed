@@ -2,7 +2,7 @@ package dev.yz.dnsobserver;
 
 /** Display state comes from observation plus lifecycle, never from a request flag alone. */
 public enum DnsFeatureState {
-    UNKNOWN("待确认"), INTERRUPTED("会话已中断"), OFF("已关闭"), STARTING("正在开启"), ON("已开启"), STOPPING("正在关闭"), ERROR("异常");
+    UNKNOWN("待确认"), INTERRUPTED("服务未运行 · 待清理"), OFF("已关闭"), STARTING("正在开启"), ON("已开启"), STOPPING("正在关闭"), ERROR("异常");
     public final String label;
     DnsFeatureState(String label) { this.label=label; }
     public static DnsFeatureState resolve(String phase, boolean selected, boolean requested,

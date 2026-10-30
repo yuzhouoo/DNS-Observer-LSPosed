@@ -102,7 +102,7 @@ seed_complete() {
       }END{exit !(seen["2000::/3udp"]&&seen["2000::/3tcp"]&&seen["fc00::/7udp"]&&seen["fc00::/7tcp"])}'
 }
 clear_owned() {
-    if ! owned && !seed_present; then return 0; fi
+    if ! owned && ! seed_present; then return 0; fi
     clear_seed
     del_jumps
     "$IP6" -w 1 -t mangle -F "$CHAIN" >/dev/null 2>&1 || true

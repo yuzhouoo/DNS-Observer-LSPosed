@@ -76,6 +76,12 @@ p.write_text(json.dumps(s))
             env=dict(env,**extra),text=True,capture_output=True,timeout=30)
     def snap():return json.loads(state.read_text())
     lo=conf/'lo/disable_ipv6';lease=root/'lo_12345'
+    # Empty cleanup must be quiet; shell syntax checking cannot catch !function typos.
+    clean=call('recover');assert clean.returncode==0 and not clean.stderr,(clean.stdout,clean.stderr)
+    # Orphaned exact seeds must be removed even when marker and chain are absent.
+    orphan=dict(empty,seeds=['14990: from all to 2000::/3 iif lo uidrange 12345-12345 ipproto udp dport 53 lookup 19754'])
+    state.write_text(json.dumps(orphan))
+    clean=call('recover');assert clean.returncode==0 and not clean.stderr and snap()==empty,(clean.stdout,clean.stderr,snap())
     blocked=call('install-probe',BLOCK_EARLY='1');assert blocked.returncode==4 and 'IPV6_POLICY_BLOCKED' in blocked.stderr and snap()==empty
     r=call('install-probe');assert r.returncode==0,(r.stdout,r.stderr)
     assert 'LOOPBACK_TEMP_ENABLED' in r.stdout and lo.read_text().strip()=='0'
