@@ -21,18 +21,20 @@ type endpoint struct {
 	group int
 }
 type DNS struct {
-	viaCore atomic.Bool
-	ready6  atomic.Bool
-	fault   chan error
-	mu      sync.RWMutex
-	ends    []endpoint
-	cfg     Config
-	log     *Logger
-	closers []io.Closer
-	ctx     context.Context
-	cancel  context.CancelFunc
-	slots   chan struct{}
-	wg      sync.WaitGroup
+	viaCore     atomic.Bool
+	ready6      atomic.Bool
+	fault       chan error
+	mu          sync.RWMutex
+	ends        []endpoint
+	failedUntil map[string]time.Time
+	active      map[bool]string
+	cfg         Config
+	log         *Logger
+	closers     []io.Closer
+	ctx         context.Context
+	cancel      context.CancelFunc
+	slots       chan struct{}
+	wg          sync.WaitGroup
 }
 
 func socketControl(family string, transparent, bypass bool) func(string, string, syscall.RawConn) error {
@@ -140,6 +142,9 @@ func (d *DNS) Resolve(ctx context.Context) error {
 	}
 	d.mu.Lock()
 	d.ends = good
+	for _, ep := range good {
+		delete(d.failedUntil, ep.addr)
+	}
 	d.mu.Unlock()
 	return nil
 }
@@ -245,6 +250,13 @@ func (d *DNS) forward(q []byte, proto, client string, upstreamOnly bool) []byte 
 	whole, cancelAll := context.WithTimeout(d.ctx, 8*time.Second)
 	defer cancelAll()
 	for _, ep := range ends {
+		d.mu.RLock()
+		hold := d.failedUntil[ep.addr]
+		d.mu.RUnlock()
+		if time.Now().Before(hold) {
+			last = errors.New("上游失败冷却中，未重复阻塞查询")
+			continue
+		}
 		if whole.Err() != nil {
 			last = whole.Err()
 			break
@@ -258,9 +270,21 @@ func (d *DNS) forward(q []byte, proto, client string, upstreamOnly bool) []byte 
 		}
 		cancel()
 		used = ep.addr
+		d.mu.Lock()
 		if last == nil {
+			delete(d.failedUntil, ep.addr)
+			previous := d.active[upstreamOnly]
+			d.active[upstreamOnly] = ep.addr
+			d.mu.Unlock()
+			if previous != ep.addr {
+				d.log.Event("UPSTREAM_SWITCH", "stage=%t group=%d previous=%s selected=%s transport=%s", upstreamOnly, ep.group, previous, ep.addr, transport)
+			}
 			break
 		}
+		if whole.Err() == nil {
+			d.failedUntil[ep.addr] = time.Now().Add(10 * time.Second)
+		}
+		d.mu.Unlock()
 	}
 	if last != nil || answer == nil {
 		answer = servfail(q)
@@ -425,7 +449,7 @@ func (d *DNS) tcp(l net.Listener, upstreamOnly bool) {
 }
 func NewDNS(cfg Config, log *Logger) *DNS {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &DNS{cfg: cfg, log: log, ctx: ctx, cancel: cancel, slots: make(chan struct{}, 128), fault: make(chan error, 1)}
+	return &DNS{cfg: cfg, log: log, ctx: ctx, cancel: cancel, slots: make(chan struct{}, 128), fault: make(chan error, 1), failedUntil: map[string]time.Time{}, active: map[bool]string{}}
 }
 func (d *DNS) Start() error {
 	ctx, cancel := context.WithTimeout(d.ctx, 30*time.Second)

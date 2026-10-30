@@ -454,6 +454,10 @@ func (m *Manager) Serve() error {
 			}
 		}
 		if e = m.FW.Probe("127.0.0.1:15353", true); e != nil {
+			if cfg.Mode == "proxy" && m.dns.viaCore.Load() && m.FW.Probe("127.0.0.1:15354", true) == nil {
+				m.proxyFailed(cfg, fmt.Errorf("Mihomo DNS 层异常，独立自建上游仍正常: %w", e))
+				continue
+			}
 			m.status.DNS = "upstream_unavailable"
 			m.status.Phase = "upstream_unavailable"
 			m.status.Error = e.Error()
