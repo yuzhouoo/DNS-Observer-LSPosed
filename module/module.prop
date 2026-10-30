@@ -1,6 +1,6 @@
 id=yutong_runtime
 name=域瞳 · DNS 与 Mihomo TPROXY 后台
-version=v0.7.0-beta1
-versionCode=36
+version=v0.7.0-beta2
+versionCode=37
 author=YuTong
 description=独立 Root 后台：仅 DNS / DNS+Mihomo TPROXY / 全部停止。Mihomo 核心和配置需用户提供。默认全部停止。

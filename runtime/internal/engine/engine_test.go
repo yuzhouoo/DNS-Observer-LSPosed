@@ -120,14 +120,22 @@ func TestSIMMatchStrict(t *testing.T) {
 }
 
 type fakeRunner struct {
-	calls   [][]string
-	blocked bool
-	fail    string
+	calls                [][]string
+	blocked              bool
+	fail                 string
+	unsupportedSelectors bool
+	routeAvailable       bool
 }
 
 func (f *fakeRunner) Run(a ...string) (string, error) {
 	f.calls = append(f.calls, append([]string{}, a...))
 	s := strings.Join(a, " ")
+	if f.unsupportedSelectors && strings.Contains(s, " rule ") && strings.Contains(s, " ipproto ") {
+		return "Error: argument \"ipproto\" is wrong: Failed to parse rule type", errors.New("ip: exit status 255")
+	}
+	if f.routeAvailable && strings.Contains(s, " route get ") {
+		return "198.18.255.53 via 192.0.2.1 dev test0 src 192.0.2.2", nil
+	}
 	if f.fail != "" && strings.Contains(s, f.fail) {
 		return "", errors.New("injected failure")
 	}
@@ -190,6 +198,19 @@ func TestFirewallScopeAndCancellation(t *testing.T) {
 	}
 	if len(r.calls) != 0 {
 		t.Fatal("unowned routing mutated")
+	}
+}
+
+func TestInitialRouteCompatibilityFallback(t *testing.T) {
+	r := &fakeRunner{unsupportedSelectors: true, routeAvailable: true}
+	f := &Firewall{R: r, Home: t.TempDir()}
+	mode, err := f.installInitialRoute("4")
+	if err != nil || mode != "reroute" {
+		t.Fatalf("compatible reroute fallback rejected: mode=%q err=%v", mode, err)
+	}
+	r.routeAvailable = false
+	if _, err = f.installInitialRoute("6"); err == nil {
+		t.Fatal("fallback accepted without an initial route")
 	}
 }
 func TestOwnershipSnapshot(t *testing.T) {

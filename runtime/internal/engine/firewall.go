@@ -83,6 +83,56 @@ func (f *Firewall) seed(fam, op string) error {
 	}
 	return last
 }
+
+func unsupportedRuleSelector(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return (strings.Contains(s, "ipproto") || strings.Contains(s, "dport")) &&
+		(strings.Contains(s, "wrong") || strings.Contains(s, "parse") || strings.Contains(s, "unknown") || strings.Contains(s, "invalid"))
+}
+
+// installInitialRoute prefers a port-scoped policy rule. Some Android ip
+// binaries cannot encode FRA_IP_PROTO/FRA_DPORT even when the kernel can.
+// In that case the ordinary first route is sufficient: mangle/OUTPUT marks
+// DNS, then the 9100 rule performs the local re-route. Never replace this with
+// a broad unmarked rule; that would loop all locally-originated traffic.
+func (f *Firewall) installInitialRoute(fam string) (string, error) {
+	if e := f.seed(fam, "add"); e == nil {
+		return "exact", nil
+	} else if !unsupportedRuleSelector(e) {
+		f.seed(fam, "del")
+		return "", fmt.Errorf("精确 DNS 初始路由安装失败: %w", e)
+	}
+	f.seed(fam, "del")
+	target := "198.18.255.53"
+	if fam == "6" {
+		target = "2001:db8:ffff::53"
+	}
+	if out, e := f.ip(fam, "route", "get", target); e != nil || strings.TrimSpace(out) == "" {
+		if e == nil {
+			e = errors.New("无可用路由")
+		}
+		return "", fmt.Errorf("ip 工具不支持 ipproto/dport，且 IPv%s 无初始路由: %w", fam, e)
+	}
+	if f.Log != nil {
+		f.Log.Event("ROUTE_SELECTOR_COMPAT", "IPv%s 的 ip 工具不支持 ipproto/dport；已验证普通初始路由，使用 OUTPUT 打标后二次选路", fam)
+	}
+	return "reroute", nil
+}
+
+func (f *Firewall) routeModes() map[string]string {
+	b, e := os.ReadFile(f.Home + "/run/route-modes.json")
+	if e != nil {
+		return nil
+	}
+	var modes map[string]string
+	if json.Unmarshal(b, &modes) != nil {
+		return nil
+	}
+	return modes
+}
 func (f *Firewall) Preflight(cfg Config) error {
 	if cfg.IPv4 {
 		s, e := f.ip("4", "addr", "show", "dev", "lo")
@@ -148,6 +198,7 @@ func (f *Firewall) Install(cfg Config, probe bool) error {
 	f.installing = true
 	defer func() { f.installing = false }()
 
+	routeModes := map[string]string{}
 	for _, fam := range f.family(cfg) {
 		if e := f.blocked(fam); e != nil {
 			return e
@@ -272,9 +323,11 @@ func (f *Firewall) Install(cfg Config, probe bool) error {
 		if _, e := f.ip(fam, "rule", "add", "pref", "9100", "fwmark", Capture, "lookup", Table); e != nil {
 			return e
 		}
-		if e := f.seed(fam, "add"); e != nil {
-			return fmt.Errorf("内核不支持精确 DNS 初始路由: %w", e)
+		mode, e := f.installInitialRoute(fam)
+		if e != nil {
+			return e
 		}
+		routeModes[fam] = mode
 		if e := f.ipt(fam, "mangle", "-I", "PREROUTING", "1", "-i", "lo", "-m", "mark", "--mark", Capture, "-j", chain("PRE")); e != nil {
 			return e
 		}
@@ -307,6 +360,9 @@ func (f *Firewall) Install(cfg Config, probe bool) error {
 				return e
 			}
 		}
+	}
+	if e := AtomicJSON(f.Home+"/run/route-modes.json", routeModes); e != nil {
+		return e
 	}
 	snapshot := map[string]string{}
 	for _, fam := range f.family(cfg) {
@@ -416,6 +472,7 @@ func (f *Firewall) Cleanup() error {
 	}
 	os.Remove(f.Home + "/run/ownership.json")
 	os.Remove(f.Home + "/run/expected-rules.json")
+	os.Remove(f.Home + "/run/route-modes.json")
 	return nil
 }
 func (f *Firewall) Check(cfg Config) error {
@@ -437,6 +494,7 @@ func (f *Firewall) Check(cfg Config) error {
 			return fmt.Errorf("规则内容被更改: %s", key)
 		}
 	}
+	modes := f.routeModes()
 	for _, fam := range f.family(cfg) {
 		if e := f.blocked(fam); e != nil {
 			return e
@@ -474,12 +532,24 @@ func (f *Firewall) Check(cfg Config) error {
 			nets = []string{"2000::/3", "fc00::/7"}
 			lease = "fd53:7974:6f6e::1"
 		}
-		for i, proto := range []string{"udp", "tcp"} {
-			for _, subnet := range nets {
-				if !hasPolicy(rules, 9000+i, map[string]string{"to": subnet, "iif": "lo", "fwmark": "0/0x20000000", "ipproto": proto, "dport": "53", "lookup": Table}) {
-					return fmt.Errorf("IPv%s %s %s DNS 初始选路不完整", fam, subnet, proto)
+		if modes[fam] == "exact" {
+			for i, proto := range []string{"udp", "tcp"} {
+				for _, subnet := range nets {
+					if !hasPolicy(rules, 9000+i, map[string]string{"to": subnet, "iif": "lo", "fwmark": "0/0x20000000", "ipproto": proto, "dport": "53", "lookup": Table}) {
+						return fmt.Errorf("IPv%s %s %s DNS 初始选路不完整", fam, subnet, proto)
+					}
 				}
 			}
+		} else if modes[fam] == "reroute" {
+			target := "198.18.255.53"
+			if fam == "6" {
+				target = "2001:db8:ffff::53"
+			}
+			if out, e := f.ip(fam, "route", "get", target); e != nil || strings.TrimSpace(out) == "" {
+				return fmt.Errorf("IPv%s 兼容初始路由已失效", fam)
+			}
+		} else {
+			return fmt.Errorf("IPv%s 初始选路模式记录缺失", fam)
 		}
 		addr, e := f.ip(fam, "addr", "show", "dev", "lo")
 		if e != nil || !strings.Contains(addr, lease+"/") {

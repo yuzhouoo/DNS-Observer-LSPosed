@@ -46,7 +46,7 @@ jobs:
           for script in module/*.sh; do sh -n "$script"; done
           python3 tests/test_runtime_wiring.py
           cd module
-          zip -r ../YuTong-Runtime-v0.7.0-beta1-KernelSU-arm64.zip .
+          zip -r ../YuTong-Runtime-v0.7.0-beta2-KernelSU-arm64.zip .
       - name: Install Android SDK packages
         shell: bash
         run: |
@@ -156,11 +156,11 @@ jobs:
           print('Verified: Modern API 102 resources included; no legacy entry')
           PY
       - name: Package complete source snapshot
-        run: git archive --format=zip --output=DNSObserver-v0.7.0-beta1-source.zip HEAD
+        run: git archive --format=zip --output=DNSObserver-v0.7.0-beta2-source.zip HEAD
       - uses: actions/upload-artifact@v4
         with:
-          name: DNSObserver-v0.7.0-beta1-source
-          path: DNSObserver-v0.7.0-beta1-source.zip
+          name: DNSObserver-v0.7.0-beta2-source
+          path: DNSObserver-v0.7.0-beta2-source.zip
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
@@ -171,7 +171,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: YuTong-Runtime-KernelSU
-          path: YuTong-Runtime-v0.7.0-beta1-KernelSU-arm64.zip
+          path: YuTong-Runtime-v0.7.0-beta2-KernelSU-arm64.zip
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         if: always()

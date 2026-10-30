@@ -1,4 +1,4 @@
-# 域瞳独立后台 v0.7.0-beta1
+# 域瞳独立后台 v0.7.0-beta2
 
 仅支持 arm64、KernelSU、Mihomo TPROXY，不包含 Mihomo 核心。无 TUN / 多核心 / 自动订阅转换。首次安装默认全部停止。
 

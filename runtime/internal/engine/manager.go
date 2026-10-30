@@ -59,7 +59,7 @@ type Manager struct {
 func NewManager(home string) *Manager {
 	l := NewLogger(home)
 	r := &Commands{Log: l}
-	return &Manager{Home: home, Log: l, R: r, FW: &Firewall{R: r, Home: home, Log: l}, core: &Core{Home: home, Log: l, R: r}, status: Status{Version: "0.7.0-beta1", PID: os.Getpid(), Mode: "off", Phase: "initializing", DNS: "off", Proxy: "off", IPv4: "off", IPv6: "off"}}
+	return &Manager{Home: home, Log: l, R: r, FW: &Firewall{R: r, Home: home, Log: l}, core: &Core{Home: home, Log: l, R: r}, status: Status{Version: "0.7.0-beta2", PID: os.Getpid(), Mode: "off", Phase: "initializing", DNS: "off", Proxy: "off", IPv4: "off", IPv6: "off"}}
 }
 func (m *Manager) state() {
 	m.mu.Lock()
@@ -500,7 +500,7 @@ func routeEvents(out chan<- struct{}) {
 	}
 }
 func ReadStatus(home string) Status {
-	s := Status{Version: "0.7.0-beta1", Mode: "off", Phase: "not_running", DNS: "off", Proxy: "off", IPv4: "off", IPv6: "off"}
+	s := Status{Version: "0.7.0-beta2", Mode: "off", Phase: "not_running", DNS: "off", Proxy: "off", IPv4: "off", IPv6: "off"}
 	b, e := os.ReadFile(home + "/run/status.json")
 	if e == nil {
 		json.Unmarshal(b, &s)
