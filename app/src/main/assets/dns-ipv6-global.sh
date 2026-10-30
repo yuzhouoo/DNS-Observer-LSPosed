@@ -6,7 +6,7 @@ MODE="${1:-}"; APP_UID="${2:-}"; TOKEN="${3:-}"; OWNER_PID="${4:-}"; TARGET_PID=
 CHAIN=DO6G061; TABLE=19754; PREF=15010
 MARK=0x40000000/0x40000000; PROXY=15456
 MARKER="/data/local/tmp/dobs6g61_${APP_UID}.run"
-case "$MODE" in install-probe|promote|recover|status|check|watch|stop-process|stop-owned-daemons) ;; *) exit 2;; esac
+case "$MODE" in install-probe|promote|recover|status|check|watch|refresh|stop-process|stop-owned-daemons) ;; *) exit 2;; esac
 case "$APP_UID" in ''|*[!0-9]*) exit 2;; esac
 case "$TOKEN" in ''|*[!a-zA-Z0-9_-]*) exit 2;; esac
 IP6="$(command -v ip6tables 2>/dev/null || true)"
@@ -24,6 +24,17 @@ del_jumps() {
             n=$((n+1)); [ "$n" -lt 8 ] || break
         done
         for subnet in '2000::/3' 'fc00::/7'; do
+            for scope in app global; do
+                n=0
+                while :; do
+                    if [ "$scope" = app ]; then
+                        "$IP6" -w 1 -t mangle -D OUTPUT -d "$subnet" -p "$proto" --dport 53 -m owner --uid-owner "$APP_UID" -m mark --mark "$MARK" -j ACCEPT >/dev/null 2>&1 || break
+                    else
+                        "$IP6" -w 1 -t mangle -D OUTPUT -d "$subnet" -p "$proto" --dport 53 -m owner ! --uid-owner 0 -m mark --mark "$MARK" -j ACCEPT >/dev/null 2>&1 || break
+                    fi
+                    n=$((n+1)); [ "$n" -lt 8 ] || break
+                done
+            done
             n=0
             while "$IP6" -w 1 -t mangle -C OUTPUT -d "$subnet" -p "$proto" --dport 53 -m owner --uid-owner "$APP_UID" -j MARK --set-xmark "$MARK" >/dev/null 2>&1; do
                 "$IP6" -w 1 -t mangle -D OUTPUT -d "$subnet" -p "$proto" --dport 53 -m owner --uid-owner "$APP_UID" -j MARK --set-xmark "$MARK" >/dev/null 2>&1 || break
@@ -102,7 +113,7 @@ seed_complete() {
       }END{exit !(seen["2000::/3udp"]&&seen["2000::/3tcp"]&&seen["fc00::/7udp"]&&seen["fc00::/7tcp"])}'
 }
 clear_owned() {
-    if ! owned && ! seed_present; then return 0; fi
+    if ! owned && ! seed_present; then del_jumps; return 0; fi
     clear_seed
     del_jumps
     "$IP6" -w 1 -t mangle -F "$CHAIN" >/dev/null 2>&1 || true
@@ -119,7 +130,9 @@ verify_clean() {
         "$IP6" -w 1 -t mangle -C PREROUTING -i lo -p "$proto" --dport 53 -m mark --mark "$MARK" -j "$CHAIN" >/dev/null 2>&1 && bad=1
         for subnet in '2000::/3' 'fc00::/7'; do
             "$IP6" -w 1 -t mangle -C OUTPUT -d "$subnet" -p "$proto" --dport 53 -m owner --uid-owner "$APP_UID" -j MARK --set-xmark "$MARK" >/dev/null 2>&1 && bad=1
+            "$IP6" -w 1 -t mangle -C OUTPUT -d "$subnet" -p "$proto" --dport 53 -m owner --uid-owner "$APP_UID" -m mark --mark "$MARK" -j ACCEPT >/dev/null 2>&1 && bad=1
             "$IP6" -w 1 -t mangle -C OUTPUT -d "$subnet" -p "$proto" --dport 53 -m owner ! --uid-owner 0 -j MARK --set-xmark "$MARK" >/dev/null 2>&1 && bad=1
+            "$IP6" -w 1 -t mangle -C OUTPUT -d "$subnet" -p "$proto" --dport 53 -m owner ! --uid-owner 0 -m mark --mark "$MARK" -j ACCEPT >/dev/null 2>&1 && bad=1
         done
     done
     "$IP6" -w 1 -t mangle -S "$CHAIN" >/dev/null 2>&1 && bad=1
@@ -206,6 +219,17 @@ owned_root_pid() {
     done
     return 1
 }
+early_blocked() {
+    "$IP" -6 rule show | awk '$1 ~ /^[0-9]+:$/ {p=$1;sub(":","",p);if(p+0<14990 && $2=="from" && $3=="all" && $4=="unreachable")found=1} END{exit !found}'
+}
+selectors_first() {
+    # Rules can exist but be shadowed by a newly inserted Box jump / DIVERT.
+    "$IP6" -w 1 -t mangle -S OUTPUT | awk '
+      $1=="-A" && $2=="OUTPUT" {n++; if(n<=8 && $0 !~ /--set-xmark 0x40000000\/0x40000000/ && $0 !~ /--mark 0x40000000\/0x40000000 -j ACCEPT/)bad=1}
+      END{exit (bad || n<8)}' || return 1
+    "$IP6" -w 1 -t mangle -S PREROUTING | awk '
+      $1=="-A" && $2=="PREROUTING" {n++;if(n<=2 && $0 !~ /-j DO6G061$/)bad=1} END{exit (bad || n<2)}'
+}
 case "$MODE" in
  stop-owned-daemons)
     # Explicit user STOP only. Kill exclusively DNS Observer global Root
@@ -270,6 +294,8 @@ case "$MODE" in
     if verify_clean && restore_loopback; then rm -f "$MARKER"; echo 'RECOVERED: verified clean'; else exit 11; fi
     ;;
  check)
+    early_blocked && { echo 'CHECK_FAILED: IPV6_POLICY_BLOCKED: earlier unconditional unreachable rule'; exit 1; }
+    selectors_first || { echo 'CHECK_FAILED: DNS selectors shadowed by earlier mangle rules'; exit 1; }
     [ "$(cat "$MARKER" 2>/dev/null)" = "global:$TOKEN" ] || { echo CHECK_FAILED: session marker mismatch; exit 1; }
     "$IP6" -w 1 -t mangle -S "$CHAIN" >/dev/null 2>&1 || { echo CHECK_FAILED: TPROXY chain missing; exit 1; }
     seed_complete '1-4294967294' || { echo CHECK_FAILED: DNS initial-route policy missing; exit 1; }
@@ -279,9 +305,26 @@ case "$MODE" in
         "$IP6" -w 1 -t mangle -C PREROUTING -i lo -p "$proto" --dport 53 -m mark --mark "$MARK" -j "$CHAIN" >/dev/null 2>&1 || { echo "CHECK_FAILED: PREROUTING $proto selector missing"; exit 1; }
         for subnet in '2000::/3' 'fc00::/7'; do
             "$IP6" -w 1 -t mangle -C OUTPUT -d "$subnet" -p "$proto" --dport 53 -m owner ! --uid-owner 0 -j MARK --set-xmark "$MARK" >/dev/null 2>&1 || { echo "CHECK_FAILED: OUTPUT $proto $subnet selector missing"; exit 1; }
+            "$IP6" -w 1 -t mangle -C OUTPUT -d "$subnet" -p "$proto" --dport 53 -m owner ! --uid-owner 0 -m mark --mark "$MARK" -j ACCEPT >/dev/null 2>&1 || { echo "CHECK_FAILED: OUTPUT $proto $subnet selector missing"; exit 1; }
         done
     done
     echo 'ACTIVE: IPv6 TPROXY selectors complete'
+    ;;
+ refresh)
+    [ "$(cat "$MARKER" 2>/dev/null)" = "global:$TOKEN" ] || { echo 'REFRESH_REFUSED: session mismatch'; exit 1; }
+    early_blocked && { echo 'REFRESH_REFUSED: IPV6_POLICY_BLOCKED'; exit 1; }
+    seed_complete '1-4294967294' && rule_present && route_present || { echo 'REFRESH_REFUSED: routing incomplete'; exit 1; }
+    "$IP6" -w 1 -t mangle -S "$CHAIN" >/dev/null 2>&1 || exit 1
+    del_jumps
+    for proto in udp tcp; do
+        "$IP6" -w 1 -t mangle -I PREROUTING 1 -i lo -p "$proto" --dport 53 -m mark --mark "$MARK" -j "$CHAIN" || exit 1
+        for subnet in '2000::/3' 'fc00::/7'; do
+            "$IP6" -w 1 -t mangle -I OUTPUT 1 -d "$subnet" -p "$proto" --dport 53 -m owner ! --uid-owner 0 -m mark --mark "$MARK" -j ACCEPT || exit 1
+            "$IP6" -w 1 -t mangle -I OUTPUT 1 -d "$subnet" -p "$proto" --dport 53 -m owner ! --uid-owner 0 -j MARK --set-xmark "$MARK" || exit 1
+        done
+    done
+    selectors_first || exit 1
+    echo 'REFRESHED: current session selectors restored; daemon retained'
     ;;
  status)
     network_diagnostics
@@ -294,7 +337,7 @@ case "$MODE" in
     ;;
  install-probe)
     # A foreign earlier unconditional block is an explicit policy; never bypass it.
-    if "$IP" -6 rule show | awk '$1 ~ /^[0-9]+:$/ {p=$1;sub(":","",p);if(p+0<14990 && $2=="from" && $3=="all" && $4=="unreachable")found=1} END{exit !found}'; then
+    if early_blocked; then
         echo 'PRECHECK_FAILED: IPV6_POLICY_BLOCKED: earlier unconditional unreachable rule; disable IPv6 blocking in its owning module' >&2
         network_diagnostics >&2; exit 4
     fi
@@ -353,6 +396,7 @@ case "$MODE" in
     for proto in udp tcp; do
         "$IP6" -w 1 -t mangle -I PREROUTING 1 -i lo -p "$proto" --dport 53 -m mark --mark "$MARK" -j "$CHAIN" || { rollback_owned; exit 9; }
         for subnet in '2000::/3' 'fc00::/7'; do
+            "$IP6" -w 1 -t mangle -I OUTPUT 1 -d "$subnet" -p "$proto" --dport 53 -m owner --uid-owner "$APP_UID" -m mark --mark "$MARK" -j ACCEPT || { rollback_owned; exit 10; }
             "$IP6" -w 1 -t mangle -I OUTPUT 1 -d "$subnet" -p "$proto" --dport 53 -m owner --uid-owner "$APP_UID" -j MARK --set-xmark "$MARK" || { rollback_owned; exit 10; }
         done
     done
@@ -365,6 +409,7 @@ case "$MODE" in
     for proto in udp tcp; do
         for subnet in '2000::/3' 'fc00::/7'; do
             "$IP6" -w 1 -t mangle -C OUTPUT -d "$subnet" -p "$proto" --dport 53 -m owner --uid-owner "$APP_UID" -j MARK --set-xmark "$MARK" >/dev/null 2>&1 || { echo 'PRECHECK_FAILED: selftest rule missing' >&2; exit 4; }
+            "$IP6" -w 1 -t mangle -C OUTPUT -d "$subnet" -p "$proto" --dport 53 -m owner --uid-owner "$APP_UID" -m mark --mark "$MARK" -j ACCEPT >/dev/null 2>&1 || { echo 'PRECHECK_FAILED: selftest rule missing' >&2; exit 4; }
         done
     done
     # Token and probe selectors checked before any promotion mutation.
@@ -374,12 +419,14 @@ case "$MODE" in
     # Root UID 0 excluded to prevent DNS forwarding recursion.
     for proto in udp tcp; do
         for subnet in '2000::/3' 'fc00::/7'; do
+            "$IP6" -w 1 -t mangle -I OUTPUT 1 -d "$subnet" -p "$proto" --dport 53 -m owner ! --uid-owner 0 -m mark --mark "$MARK" -j ACCEPT || { rollback_owned; exit 10; }
             "$IP6" -w 1 -t mangle -I OUTPUT 1 -d "$subnet" -p "$proto" --dport 53 -m owner ! --uid-owner 0 -j MARK --set-xmark "$MARK" || { rollback_owned; exit 10; }
         done
     done
     for proto in udp tcp; do
         for subnet in '2000::/3' 'fc00::/7'; do
             "$IP6" -w 1 -t mangle -D OUTPUT -d "$subnet" -p "$proto" --dport 53 -m owner --uid-owner "$APP_UID" -j MARK --set-xmark "$MARK" || { rollback_owned; exit 11; }
+            "$IP6" -w 1 -t mangle -D OUTPUT -d "$subnet" -p "$proto" --dport 53 -m owner --uid-owner "$APP_UID" -m mark --mark "$MARK" -j ACCEPT || { rollback_owned; exit 11; }
         done
     done
     printf 'global:%s\n' "$TOKEN" > "$MARKER" || { rollback_owned; exit 12; }

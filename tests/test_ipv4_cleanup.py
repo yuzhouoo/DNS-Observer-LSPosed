@@ -12,15 +12,16 @@ import os,sys,json,fcntl
 from pathlib import Path
 p=Path(os.environ['MODEL']);a=sys.argv[1:];family='6' if 'ip6tables' in sys.argv[0] else '4'
 if a[:1]==['-w']:a=a[2:]
-if a[:2]==['-t','nat']:a=a[2:]
+table=a[1] if a[:1]==['-t'] else 'filter'
+if a[:1]==['-t']:a=a[2:]
 with open(str(p)+'.lock','w') as lock:
  fcntl.flock(lock,fcntl.LOCK_EX)
- all=json.loads(p.read_text());s=all[family]
+ all=json.loads(p.read_text());key=family if table=='nat' else family+'m';s=all.setdefault(key,{'chain':False,'entries':[]})
  flag=a[0];args=a[1:]
  if flag=='-S':
   if args:
-   if not s['chain'] or args[0]!='DOBSR53':sys.exit(1)
-   print('-N DOBSR53');print('\\n'.join(e for e in s['entries'] if e.startswith('-A DOBSR53 ')))
+   if args[0]!='OUTPUT' and (not s['chain'] or args[0]!='DOBSR53'):sys.exit(1)
+   print('\\n'.join(e for e in s['entries'] if e.startswith('-A '+args[0]+' ')))
   else:
    if s['chain']:print('-N DOBSR53')
    print('\\n'.join(s['entries']));print('-N OTHER_DOBSR53_BACKUP');print('-A OTHER_DOBSR53_BACKUP -j RETURN')
@@ -35,7 +36,8 @@ with open(str(p)+'.lock','w') as lock:
   s['chain']=True
  if flag in ['-A','-I']:
   if flag=='-I':args=[args[0]]+args[2:]
-  s['entries'].append('-A '+' '.join(args))
+  if flag=='-I':s['entries'].insert(0,'-A '+' '.join(args))
+  else:s['entries'].append('-A '+' '.join(args))
  if flag=='-D':
   e='-A '+' '.join(args)
   if e not in s['entries']:sys.exit(1)
@@ -57,6 +59,11 @@ with open(str(p)+'.lock','w') as lock:
         r=call(mode,**extra);assert r.returncode==0,(mode,r.stdout,r.stderr);return r.stdout
     def snap():return json.loads(state.read_text())
     ok('install');ok('status')
+    # mangle guard matches only DNS53; non-DNS remains on Box's normal path.
+    assert all('--dport 53' in e for e in snap()['4m']['entries'] if e.startswith('-A OUTPUT '))
+    good=snap();broken=json.loads(json.dumps(good));broken['4m']['entries'].insert(0,'-A OUTPUT -j BOX_LOCAL');state.write_text(json.dumps(broken))
+    assert call('status').returncode!=0, 'existing but shadowed guard is not active'
+    state.write_text(json.dumps(good))
     r=call('remove',LOCK_ONCE='1');assert r.returncode!=0
     assert call('status').returncode!=0, 'partial state is not active'
     assert call('verify-clean').returncode==12, 'partial state is not clean either'
@@ -82,6 +89,11 @@ with open(str(p)+'.lock','w') as lock:
     ok('install',token='livesession');ok('install',token='livesession')
     assert 'SKIP_NEWER_SESSION' not in ok('remove-owned',token='livesession')
     ok('verify-clean')
+    assert not snap()['4m']['chain'] and not snap()['4m']['entries']
+    # Mangle-only residue must be visible and removable after NAT/marker disappeared.
+    m=snap();m['4m']['chain']=True;state.write_text(json.dumps(m))
+    assert call('verify-clean').returncode==12
+    ok('remove');ok('verify-clean')
     # Concurrent install/remove operations serialize; a final stop leaves no owned residue.
     procs=[subprocess.Popen(['sh','-c',script,'--',mode,'12345','15353','0',str(os.getpid()),'abc123'],
              env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True) for mode in ['install','remove']]

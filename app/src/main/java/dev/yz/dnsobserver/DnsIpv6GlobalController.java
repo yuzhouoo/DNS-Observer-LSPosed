@@ -78,7 +78,7 @@ public final class DnsIpv6GlobalController {
         return root(ctx,mode,session,seconds,0);
     }
     private static String root(Context ctx,String mode,String session,int seconds,int targetPid)throws Exception{
-        if(!mode.matches("install-probe|promote|recover|status|check|stop-process|stop-owned-daemons")||!session.matches("[a-zA-Z0-9_-]{1,64}"))
+        if(!mode.matches("install-probe|promote|recover|status|check|refresh|stop-process|stop-owned-daemons")||!session.matches("[a-zA-Z0-9_-]{1,64}"))
             throw new IllegalArgumentException("Invalid global IPv6 command");
         String path=script(ctx).getAbsolutePath();
         if(!path.matches("/[a-zA-Z0-9_./-]+"))throw new IllegalStateException("Unexpected script path");
@@ -319,6 +319,20 @@ public final class DnsIpv6GlobalController {
             tcpReady=false;
             log(ctx,"关闭 IPv6 全局 DNS："+result);
             return result;
+        }
+    }
+    public static boolean refreshRules(Context ctx,java.util.function.BooleanSupplier allowed) {
+        synchronized(LOCK) {
+            if(!isServing() || !allowed.getAsBoolean())return false;
+            try {
+                root(ctx,"refresh",token,12);
+                ensureAllowed(allowed);
+                if(!probe("UDP",DOCS[0])||!probe("TCP",DOCS[1]))throw new java.io.IOException("规则恢复后的 DNS 回包验证失败");
+                ensureAllowed(allowed);
+                root(ctx,"check",token,8);
+                checkFailure="";log(ctx,"BOX_REFRESH_OK: 原代理保留，DNS 规则顺序和 UDP/TCP 回包已验证");
+                return true;
+            }catch(Exception error){checkFailure=error.toString();log(ctx,"BOX_REFRESH_FAILED: "+checkFailure);return false;}
         }
     }
     public static boolean active(Context ctx) {

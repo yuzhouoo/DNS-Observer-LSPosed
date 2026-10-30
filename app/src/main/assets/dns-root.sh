@@ -54,27 +54,32 @@ owned_lines() {
       ($1=="-N" || $1=="-A") && $2==chain {print;next}
       {for(i=1;i<NF;i++)if(($i=="-j" || $i=="-g") && $(i+1)==chain){print;break}}'
 }
-strip_family() {
-    cmd="$1"
+strip_table() {
+    cmd="$1"; table="$2"
     [ -n "$cmd" ] || return 0
     # IPv6 NAT is optional; IPv6 TPROXY has its own dedicated cleanup.
-    if ! "$cmd" -w 1 -t nat -S >/dev/null 2>&1; then
+    if ! "$cmd" -w 1 -t "$table" -S >/dev/null 2>&1; then
         [ "$cmd" = "$IP6" ] && return 0
-        echo 'REMOVE_UNKNOWN: cannot read IPv4 NAT table' >&2; return 1
+        echo 'REMOVE_UNKNOWN: cannot read IPv4 firewall table' >&2; return 1
     fi
     for protocol in udp tcp; do
         count=0
-        while "$cmd" -w 1 -t nat -C OUTPUT -p "$protocol" --dport 53 -j "$CHAIN" >/dev/null 2>&1; do
-            "$cmd" -w 1 -t nat -D OUTPUT -p "$protocol" --dport 53 -j "$CHAIN" || return 1
+        while "$cmd" -w 1 -t "$table" -C OUTPUT -p "$protocol" --dport 53 -j "$CHAIN" >/dev/null 2>&1; do
+            "$cmd" -w 1 -t "$table" -D OUTPUT -p "$protocol" --dport 53 -j "$CHAIN" || return 1
             count=$((count+1)); [ "$count" -lt 32 ] || { echo REMOVE_FAILED: excessive duplicate jumps; return 1; }
         done
     done
-    if "$cmd" -w 1 -t nat -S "$CHAIN" >/dev/null 2>&1; then
-        "$cmd" -w 1 -t nat -F "$CHAIN" || return 1
-        "$cmd" -w 1 -t nat -X "$CHAIN" || return 1
+    if "$cmd" -w 1 -t "$table" -S "$CHAIN" >/dev/null 2>&1; then
+        "$cmd" -w 1 -t "$table" -F "$CHAIN" || return 1
+        "$cmd" -w 1 -t "$table" -X "$CHAIN" || return 1
     fi
-    remaining=$("$cmd" -w 1 -t nat -S) || return 1
+    remaining=$("$cmd" -w 1 -t "$table" -S) || return 1
     [ -z "$(printf '%s\n' "$remaining" | owned_lines)" ] || { echo 'REMOVE_FAILED: owned rules remain' >&2; return 1; }
+}
+
+strip_family() {
+    strip_table "$1" nat || return 1
+    strip_table "$1" mangle || return 1
 }
 
 remove_all() {
@@ -95,10 +100,25 @@ prepare_family() {
     return 0
 }
 
+guard_family() {
+    cmd="$1"; loopback="$2"
+    "$cmd" -w 1 -t mangle -N "$CHAIN" || return 1
+    "$cmd" -w 1 -t mangle -A "$CHAIN" -m owner --uid-owner "$UID_ARG" -j RETURN || return 1
+    "$cmd" -w 1 -t mangle -A "$CHAIN" -d "$loopback" -j RETURN || return 1
+    for protocol in udp tcp; do
+        "$cmd" -w 1 -t mangle -A "$CHAIN" -p "$protocol" -j ACCEPT || return 1
+        "$cmd" -w 1 -t mangle -I OUTPUT 1 -p "$protocol" --dport 53 -j "$CHAIN" || return 1
+    done
+}
+first_jumps() {
+    "$IPT" -w 1 -t "$1" -S OUTPUT | awk '
+      $1=="-A" && $2=="OUTPUT" {n++;if(n<=2 && $0 !~ /-j DOBSR53$/)bad=1} END{exit (bad || n<2)}'
+}
 case "$ACTION" in
   verify-clean)
     rules=$("$IPT" -w 1 -t nat -S 2>&1) || { echo "VERIFY_UNKNOWN: $rules"; exit 11; }
-    residue=$(printf '%s\n' "$rules" | owned_lines)
+    mangle=$("$IPT" -w 1 -t mangle -S 2>&1) || { echo "VERIFY_UNKNOWN: $mangle"; exit 11; }
+    residue=$(printf '%s\n%s\n' "$rules" "$mangle" | owned_lines)
     if [ -n "$residue" ] || [ -f "$MARKER" ]; then
         echo 'VERIFY_FAILED: IPv4 rules or marker remain'
         printf '%s\n' "$residue"
@@ -118,6 +138,11 @@ case "$ACTION" in
     remove_all || exit 12
     ;;
   status)
+    first_jumps nat && first_jumps mangle || { echo 'CHECK_FAILED: DNS jumps shadowed by earlier rules'; exit 1; }
+    for protocol in udp tcp; do
+        "$IPT" -w 1 -t mangle -C OUTPUT -p "$protocol" --dport 53 -j "$CHAIN" >/dev/null 2>&1 &&
+        "$IPT" -w 1 -t mangle -C "$CHAIN" -p "$protocol" -j ACCEPT >/dev/null 2>&1 || exit 1
+    done
     "$IPT" -w 1 -t nat -C OUTPUT -p udp --dport 53 -j "$CHAIN" >/dev/null 2>&1 &&
     "$IPT" -w 1 -t nat -C OUTPUT -p tcp --dport 53 -j "$CHAIN" >/dev/null 2>&1 &&
     "$IPT" -w 1 -t nat -S "$CHAIN" >/dev/null 2>&1 &&
@@ -140,6 +165,8 @@ case "$ACTION" in
       "$IP6" -w 1 -t nat -I OUTPUT 1 -p udp --dport 53 -j "$CHAIN" || { remove_all; exit 8; }
       "$IP6" -w 1 -t nat -I OUTPUT 1 -p tcp --dport 53 -j "$CHAIN" || { remove_all; exit 9; }
     fi
+    guard_family "$IPT" '127.0.0.0/8' || { remove_all; exit 10; }
+    if [ "$V6" = 1 ]; then guard_family "$IP6" '::1/128' || { remove_all; exit 10; }; fi
     echo "$TOKEN" > "$MARKER" || { remove_all; exit 10; }
     chmod 600 "$MARKER" || true
     echo 'DNS redirect installed'

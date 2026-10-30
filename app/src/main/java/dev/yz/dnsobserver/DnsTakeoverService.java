@@ -269,6 +269,11 @@ public final class DnsTakeoverService extends Service {
         }
         if(!boxRequested())return;
         if(expect6 && ipv6EverActive && !ipv6RepairBlocked){
+            if(DnsIpv6GlobalController.refreshRules(this,this::boxRequested)){
+                fault6=false;status("BOX_RESTORE_OK IPv6: 保留代理，规则顺序及 UDP/TCP 回包已校验");
+                if(boxRequested())checkAndRepair(true);
+                return;
+            }
             ipv6RepairBlocked=true;
             try{
                 String clean=DnsIpv6GlobalController.stop(this);
@@ -295,7 +300,7 @@ public final class DnsTakeoverService extends Service {
                 boolean active=serving&&DnsRootRules.active(this);
                 if(!active){
                     if(!fault4){status("DETECT: IPv4 DNS 接管被覆盖或服务退出");fault4=true;}
-                    if(heal && !DnsForwardService.isStarting()){
+                    if((heal || (allowRepair && boxRequested() && serving)) && !DnsForwardService.isStarting()){
                         try{
                             if(!sessionRequested())return;
                             if(!serving){
@@ -311,6 +316,20 @@ public final class DnsTakeoverService extends Service {
                 boolean active=DnsIpv6GlobalController.active(this);
                 if(!active){
                     if(!fault6){status("DETECT: IPv6 曾正常运行，现检测到规则缺失或 Root 代理退出："+DnsIpv6GlobalController.lastCheckFailure());fault6=true;}
+                    if(allowRepair && boxRequested() && DnsIpv6GlobalController.isServing()){
+                        DnsStateEpoch.begin();
+                        boolean refreshed;
+                        try{refreshed=DnsIpv6GlobalController.refreshRules(this,this::boxRequested);}
+                        finally{DnsStateEpoch.end();}
+                        if(refreshed){fault6=false;status("BOX_REFRESH_OK IPv6: 原代理保留，规则顺序与回包已恢复");return;}
+                        // A failed actual reply test is not a healthy retained proxy.
+                        ipv6RepairBlocked=true;
+                        status("BOX_REFRESH_PAUSED IPv6: "+DnsIpv6GlobalController.lastCheckFailure()+"；正在安全清理，等待手动重新开启");
+                        DnsStateEpoch.begin();
+                        try{status("IPv6 刷新失败清理："+DnsIpv6GlobalController.stop(this));}
+                        finally{DnsStateEpoch.end();}
+                        return;
+                    }
                     if(heal){
                         // One attempt per fault episode. Failed repair is latched,
                         // never retry indefinitely while a port or route is occupied.

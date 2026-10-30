@@ -33,9 +33,12 @@ with tempfile.TemporaryDirectory() as temp:
         if r.returncode:
             return None
         return dict(line.split('=',1) for line in r.stdout.splitlines())
+    # Unrelated processes are filtered by shell builtins, not thousands of readlinks.
+    for n in range(1000,2000):
+        q=proc/str(n);q.mkdir();(q/'comm').write_text('unrelated\n')
     assert probe()['BOX'] == 'stopped'
     p = proc / '125'
-    p.mkdir()
+    p.mkdir();(p/'comm').write_text('mihomo\n')
     (p / 'exe').symlink_to('/data/adb/box/bin/mihomo')
     def stat(start):
         (p / 'stat').write_text('125 (mihomo worker) ' + ' '.join(['S'] + ['0']*18 + [str(start)]) + '\n')

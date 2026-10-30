@@ -4,8 +4,8 @@ set -u
 uid=${1:-}
 case "$uid" in ''|*[!0-9]*) exit 2;; esac
 [ "$(id -u)" = 0 ] || exit 3
-if rules=$(iptables -w 2 -t nat -S 2>/dev/null); then
-    if printf '%s\n' "$rules" | grep -Eq '(^|[[:space:]])DOBSR53([[:space:]]|$)' || [ -f "/data/local/tmp/dobsr53_${uid}.run" ]; then
+if rules=$(iptables -w 2 -t nat -S 2>/dev/null) && guard=$(iptables -w 2 -t mangle -S 2>/dev/null); then
+    if printf '%s\n%s\n' "$rules" "$guard" | grep -Eq '(^|[[:space:]])DOBSR53([[:space:]]|$)' || [ -f "/data/local/tmp/dobsr53_${uid}.run" ]; then
         echo V4=present
     else echo V4=off; fi
 else echo V4=unknown; fi

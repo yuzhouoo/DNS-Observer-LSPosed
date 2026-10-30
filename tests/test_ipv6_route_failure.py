@@ -1,7 +1,7 @@
 """Run the real global install/rollback script with a kernel model for EACCES on disabled lo."""
 from pathlib import Path
 from tempfile import TemporaryDirectory
-import json,os,subprocess
+import json,os,subprocess,ipaddress,shlex
 source=Path('app/src/main/assets/dns-ipv6-global.sh').read_text()
 with TemporaryDirectory() as tmp:
     root=Path(tmp);conf=root/'conf';boot=root/'boot';boot.write_text('boot-one\n')
@@ -18,7 +18,9 @@ p=Path(os.environ['MODEL']);s=json.loads(p.read_text());a=sys.argv[1:]
 if '-h' in a:sys.exit(0)
 if '-S' in a:
  name=a[a.index('-S')+1:]
- if name:sys.exit(0 if name[0]=='DO6G061' and s['chain'] else 1)
+ if name:
+  if name[0] not in ['OUTPUT','PREROUTING'] and not (name[0]=='DO6G061' and s['chain']):sys.exit(1)
+  print('\\n'.join(e for e in s['entries'] if e.startswith('-A '+name[0]+' ')));sys.exit(0)
  print('\\n'.join(s['entries']));sys.exit(0)
 if '-L' in a:
  name=a[a.index('-L')+1]
@@ -31,7 +33,8 @@ for flag in ['-A','-I','-C','-D']:
   i=a.index(flag);args=a[i+1:]
   if flag=='-I':args=[args[0]]+args[2:]
   e='-A '+' '.join(args)
-  if flag in ['-A','-I']:s['entries'].append(e)
+  if flag=='-I':s['entries'].insert(0,e)
+  elif flag=='-A':s['entries'].append(e)
   elif e not in s['entries']:sys.exit(1)
   elif flag=='-D':s['entries'].remove(e)
 p.write_text(json.dumps(s))
@@ -95,6 +98,44 @@ p.write_text(json.dumps(s))
 
     r=call('promote');assert r.returncode==0,(r.stdout,r.stderr)
     r=call('check');assert r.returncode==0,(r.stdout,r.stderr)
+    # A Box jump inserted above our selectors must invalidate status, despite all -C checks passing.
+    good=snap();shadow=json.loads(json.dumps(good));shadow['entries'].insert(0,'-A OUTPUT -j BOX_LOCAL');shadow['entries'].insert(0,'-A PREROUTING -j DIVERT');state.write_text(json.dumps(shadow))
+    assert call('check').returncode!=0
+    before=snap();assert call('refresh',BLOCK_EARLY='1').returncode!=0 and snap()==before
+    wrong=subprocess.run(['sh','-c',script,'--','refresh','12345','wrongtoken',str(os.getpid())],env=env,capture_output=True,text=True)
+    assert wrong.returncode!=0 and snap()==before
+    assert call('refresh').returncode==0
+    assert call('check').returncode==0
+    assert '-A OUTPUT -j BOX_LOCAL' in snap()['entries'] and '-A PREROUTING -j DIVERT' in snap()['entries']
+    assert call('check',BLOCK_EARLY='1').returncode!=0, 'later policy block cannot look active'
+    # Our scoped ACCEPT ends mangle processing after MARK; TCP/UDP 443 never match it.
+    for proto in ['udp','tcp']:
+        for subnet in ['2000::/3','fc00::/7']:
+            es=[e for e in snap()['entries'] if e.startswith('-A OUTPUT -d '+subnet+' -p '+proto+' ')]
+            assert len(es)==2 and '-j MARK' in es[0] and es[1].endswith('-j ACCEPT') and '--dport 53' in es[1]
+    def output_packet(uid,proto,dest,port):
+        mark=0
+        for line in snap()['entries']:
+            a=shlex.split(line)
+            if a[:2]!=['-A','OUTPUT']:continue
+            if a[-2:]==['-j','BOX_LOCAL']:return 0x1000000
+            if '-d' in a and ipaddress.ip_address(dest) not in ipaddress.ip_network(a[a.index('-d')+1]):continue
+            if '-p' in a and a[a.index('-p')+1]!=proto:continue
+            if '--dport' in a and int(a[a.index('--dport')+1])!=port:continue
+            if '--uid-owner' in a:
+                i=a.index('--uid-owner');same=uid==int(a[i+1])
+                if ('!' in a and same) or ('!' not in a and not same):continue
+            if '--mark' in a and mark!=0x40000000:continue
+            target=a[a.index('-j')+1]
+            if target=='MARK':mark|=0x40000000
+            if target=='ACCEPT':return mark
+        return mark
+    for proto in ['udp','tcp']:
+        assert output_packet(12345,proto,'2001:db8:ffff::53',53)==0x40000000
+        assert output_packet(20000,proto,'fd00::53',53)==0x40000000
+        assert output_packet(20000,proto,'2001:db8::443',443)==0x1000000
+        assert output_packet(0,proto,'2001:db8::53',53)==0x1000000, 'Root UID stays excluded'
+    state.write_text(json.dumps(good))
     complete=snap();broken=json.loads(json.dumps(complete));broken['seeds'].pop();state.write_text(json.dumps(broken))
     assert call('check').returncode!=0
     state.write_text(json.dumps(complete))

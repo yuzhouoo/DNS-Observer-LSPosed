@@ -6,6 +6,8 @@ IP4=$(command -v iptables) || exit 2
 IP6=$(command -v ip6tables) || exit 2
 processes=""
 for dir in /proc/[0-9]*; do
+    IFS= read -r comm < "$dir/comm" 2>/dev/null || continue
+    case "$comm" in mihomo|sing-box|xray|v2fly|hysteria) ;; *) continue;; esac
     exe=$(readlink "$dir/exe" 2>/dev/null) || continue
     case "$exe" in
         /data/adb/box/bin/mihomo|/data/adb/box/bin/sing-box|/data/adb/box/bin/xray|/data/adb/box/bin/v2fly|/data/adb/box/bin/hysteria) ;;
