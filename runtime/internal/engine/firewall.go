@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Firewall struct {
@@ -472,12 +474,12 @@ func (f *Firewall) Check(cfg Config) error {
 }
 func (f *Firewall) Selftest(cfg Config) error {
 	if cfg.IPv4 {
-		if e := ProbeDNS("198.18.255.53:53", false); e != nil {
+		if e := f.Probe("198.18.255.53:53", false); e != nil {
 			return e
 		}
 	}
 	if cfg.IPv6 {
-		if e := ProbeDNS("[2001:db8:ffff::53]:53", false); e != nil {
+		if e := f.Probe("[2001:db8:ffff::53]:53", false); e != nil {
 			return e
 		}
 	}
@@ -510,4 +512,27 @@ func (f *Firewall) IPv6Unavailable() error {
 		}
 	}
 	return nil
+}
+
+func (f *Firewall) Probe(addr string, bypass bool) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if f.Allowed != nil {
+		go func() {
+			ticker := time.NewTicker(200 * time.Millisecond)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					if !f.Allowed() {
+						cancel()
+						return
+					}
+				}
+			}
+		}()
+	}
+	return ProbeDNSContext(ctx, addr, bypass)
 }

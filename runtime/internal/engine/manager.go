@@ -155,7 +155,7 @@ func (m *Manager) apply(c Config) error {
 	}
 	m.status.DNS = "listening"
 	// Ensure local relay works before any interception / proxy startup.
-	if e := ProbeDNS("127.0.0.1:15353", true); e != nil {
+	if e := m.FW.Probe("127.0.0.1:15353", true); e != nil {
 		return e
 	}
 	target := ""
@@ -169,7 +169,7 @@ func (m *Manager) apply(c Config) error {
 			return e
 		}
 		m.status.Proxy = "ready"
-		if e = ProbeDNS("127.0.0.1:1053", true); e != nil {
+		if e = m.FW.Probe("127.0.0.1:1053", true); e != nil {
 			return e
 		}
 		d.viaCore.Store(true)
@@ -301,7 +301,14 @@ func (m *Manager) Serve() error {
 	force := true
 	pending := time.Time{}
 	for {
+		var fault <-chan error
+		if m.dns != nil {
+			fault = m.dns.fault
+		}
 		select {
+		case e := <-fault:
+			m.failed(cfg, e)
+			continue
 		case <-sig:
 			m.stop()
 			return nil
@@ -441,7 +448,7 @@ func (m *Manager) Serve() error {
 				m.status.Error = ""
 			}
 		}
-		if e = ProbeDNS("127.0.0.1:15353", true); e != nil {
+		if e = m.FW.Probe("127.0.0.1:15353", true); e != nil {
 			m.status.DNS = "upstream_unavailable"
 			m.status.Phase = "upstream_unavailable"
 			m.status.Error = e.Error()

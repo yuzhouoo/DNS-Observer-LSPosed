@@ -23,6 +23,7 @@ type endpoint struct {
 type DNS struct {
 	viaCore atomic.Bool
 	ready6  atomic.Bool
+	fault   chan error
 	mu      sync.RWMutex
 	ends    []endpoint
 	cfg     Config
@@ -170,6 +171,10 @@ func exchange(ctx context.Context, network, addr string, q []byte, bypass bool) 
 	if network == "udp" {
 		dl = time.Now().Add(1100 * time.Millisecond)
 	}
+	host, port, _ := net.SplitHostPort(addr)
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() && (port == "15353" || port == "15354" || port == "1053") {
+		dl = time.Now().Add(9 * time.Second)
+	}
 	if limit, ok := ctx.Deadline(); ok && limit.Before(dl) {
 		dl = limit
 	}
@@ -310,6 +315,12 @@ func (d *DNS) udp(c *net.UDPConn, family string, upstreamOnly bool) {
 		b, o := make([]byte, 65535), make([]byte, 256)
 		n, on, _, client, e := c.ReadMsgUDP(b, o)
 		if e != nil {
+			if d.ctx.Err() == nil {
+				select {
+				case d.fault <- fmt.Errorf("UDP%s listener: %w", family, e):
+				default:
+				}
+			}
 			return
 		}
 		q := b[:n]
@@ -360,6 +371,12 @@ func (d *DNS) tcp(l net.Listener, upstreamOnly bool) {
 	for {
 		c, e := l.Accept()
 		if e != nil {
+			if d.ctx.Err() == nil {
+				select {
+				case d.fault <- fmt.Errorf("TCP listener: %w", e):
+				default:
+				}
+			}
 			return
 		}
 		host, _, _ := net.SplitHostPort(c.RemoteAddr().String())
@@ -407,7 +424,7 @@ func (d *DNS) tcp(l net.Listener, upstreamOnly bool) {
 }
 func NewDNS(cfg Config, log *Logger) *DNS {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &DNS{cfg: cfg, log: log, ctx: ctx, cancel: cancel, slots: make(chan struct{}, 128)}
+	return &DNS{cfg: cfg, log: log, ctx: ctx, cancel: cancel, slots: make(chan struct{}, 128), fault: make(chan error, 1)}
 }
 func (d *DNS) Start() error {
 	ctx, cancel := context.WithTimeout(d.ctx, 30*time.Second)
@@ -464,9 +481,12 @@ func (d *DNS) Close() {
 	d.wg.Wait()
 }
 func ProbeDNS(addr string, bypass bool) error {
+	return ProbeDNSContext(context.Background(), addr, bypass)
+}
+func ProbeDNSContext(ctx context.Context, addr string, bypass bool) error {
 	q := queryPacket("example.com")
 	for _, p := range []string{"udp", "tcp"} {
-		if _, e := exchange(context.Background(), p, addr, q, bypass); e != nil {
+		if _, e := exchange(ctx, p, addr, q, bypass); e != nil {
 			return fmt.Errorf("%s %s: %w", p, addr, e)
 		}
 	}
