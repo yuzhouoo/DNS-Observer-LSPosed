@@ -163,7 +163,8 @@ func (m *Manager) apply(c Config) error {
 		var e error
 		target, e = m.core.SIMTarget(c)
 		if e != nil {
-			return e
+			m.Log.Event("SIM_MATCH_PENDING", "%v; preserving original/current MATCH", e)
+			target = m.core.group
 		}
 		if e = m.core.Start(c, target); e != nil {
 			return e
@@ -642,9 +643,11 @@ func (m *Manager) adjustFamilies(wanted Config) bool {
 			}
 			m.core.Stop()
 			target, e := m.core.SIMTarget(wanted)
-			if e == nil {
-				e = m.core.Start(wanted, target)
+			if e != nil {
+				m.Log.Event("SIM_MATCH_PENDING", "%v", e)
+				target = m.core.group
 			}
+			e = m.core.Start(wanted, target)
 			if e != nil {
 				m.proxyFailed(wanted, e)
 				return true

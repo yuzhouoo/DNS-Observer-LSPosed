@@ -261,8 +261,20 @@ func (c *Core) SIMTarget(cfg Config) (string, error) {
 	}
 	id, e := strconv.Atoi(strings.TrimSpace(s))
 	if e != nil || id < 0 {
-		return "", errors.New("默认数据 SubId 未知，保留现有 MATCH")
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		out, x := exec.CommandContext(ctx, "dumpsys", "telephony.registry").Output()
+		if x == nil {
+			a := regexp.MustCompile(`mActiveDataSubId[ =:]+([0-9]+)`).FindStringSubmatch(string(out))
+			if len(a) > 1 {
+				id, e = strconv.Atoi(a[1])
+			}
+		}
+		if e != nil || id < 0 {
+			return "", errors.New("默认数据 SubId 未知，保留现有 MATCH")
+		}
 	}
+
 	s, e = c.R.Run("content", "query", "--uri", "content://telephony/siminfo", "--projection", "_id:sim_id")
 	if e != nil {
 		return "", e
@@ -285,7 +297,8 @@ func (c *Core) SIMTarget(cfg Config) (string, error) {
 func (c *Core) UpdateSIM(cfg Config) error {
 	target, e := c.SIMTarget(cfg)
 	if e != nil {
-		return e
+		c.Log.Event("SIM_MATCH_PENDING", "%v; validating original MATCH", e)
+		target = ""
 	}
 	if target == c.group {
 		return nil
@@ -321,7 +334,8 @@ func ValidateCore(home string, cfg Config) error {
 	c := Core{Home: home, Log: l, R: &Commands{Log: l}, Secret: "validation-only"}
 	target, e := c.SIMTarget(cfg)
 	if e != nil {
-		return e
+		c.Log.Event("SIM_MATCH_PENDING", "%v; validating original MATCH", e)
+		target = ""
 	}
 	path := fmt.Sprintf("%s/run/validate-%d.yaml", home, os.Getpid())
 	defer os.Remove(path)

@@ -8,7 +8,7 @@
 2. 安装配套 APK 和本模块；本次引入开机运行入口，初次安装后重启。
 3. APK 的三模式控制台读取后台；导入已有 arm64 Mihomo ELF 与 YAML。对于使用相对 provider 路径的配置，将完整配置目录放在 `/data/adb/yutong/mihomo/` 或其他 `/data` 下的受保护目录，填写原始 YAML 路径。单个 YAML 导入不包含其引用的 provider 文件。
 4. 填入自建 DNS 主/从/备、端口、Bootstrap 纯 IP；先启用“仅 DNS”并查看 IPv4/IPv6 校验结果。
-5. 确认后启用“DNS + TPROXY”。启用 SIM MATCH 前，填写 YAML 内真实存在的策略组名称（或 DIRECT），避免中文别名不存在。
+5. 确认后启用“DNS + TPROXY”。启用 SIM MATCH 前，填写 YAML 内真实存在的策略组名称（或 DIRECT），避免中文别名不存在。SIM尚未就绪时保留原MATCH并记录等待状态，恢复后继续调整。
 6. 需要重启恢复时勾选开机恢复；“全部停止”会持久化，开机不会擅自恢复旧模式。
 
 核心路径默认 `/data/adb/yutong/mihomo/mihomo`，YAML 默认 `config.yaml`；可以导入或指定已有位置。不要把仅有的核心/配置留在待卸载的 Box 目录。
