@@ -46,7 +46,7 @@ func run() error {
 		r := &engine.Commands{Log: log}
 		out := engine.Export(home)
 		sys := map[string]string{}
-		commands := [][]string{{"id"}, {"getenforce"}, {"ip", "-4", "rule", "show"}, {"ip", "-6", "rule", "show"}, {"ip", "-4", "route", "show", "table", "all"}, {"ip", "-6", "route", "show", "table", "all"}, {"ip", "-6", "addr", "show"}, {"ls", "-lZ", home + "/bin/yutong"}}
+		commands := [][]string{{"id"}, {"getenforce"}, {"settings", "get", "global", "private_dns_mode"}, {"settings", "get", "global", "private_dns_specifier"}, {"ip", "-4", "rule", "show"}, {"ip", "-6", "rule", "show"}, {"ip", "-4", "route", "show", "table", "all"}, {"ip", "-6", "route", "show", "table", "all"}, {"ip", "-6", "addr", "show"}, {"ls", "-lZ", home + "/bin/yutong"}}
 		for _, fam := range []string{"iptables", "ip6tables"} {
 			for _, table := range []string{"mangle", "nat", "filter"} {
 				commands = append(commands, []string{fam, "-w", "1", "-t", table, "-S"})

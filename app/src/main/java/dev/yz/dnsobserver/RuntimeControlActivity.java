@@ -32,7 +32,7 @@ public final class RuntimeControlActivity extends Activity {
         text("域瞳 · 独立后台",26);text("v"+BuildConfig.VERSION_NAME+" · DNS53 / Mihomo TPROXY · 不依赖 APK 存活",12);
         state=text("正在读取模块真实状态…",19);detail=text("",13);state.setTextIsSelectable(true);detail.setTextIsSelectable(true);
         dnsMode=button("仅 DNS",TechUi.PRIMARY,()->apply("dns"));proxyMode=button("DNS + Mihomo TPROXY",TechUi.PRIMARY,()->apply("proxy"));offMode=button("全部停止并清理",TechUi.DANGER,()->apply("off"));
-        text("运行选项 · 保存后由后台应用",19);
+        text("运行选项 · 保存后由后台应用",19);text("接管明文 UDP/TCP DNS53；建议关闭系统私人 DNS。853 限制不会解密或替换加密 DNS。",12);
         ipv4=check("接管 IPv4（DNS / 代理）");ipv6=check("接管 IPv6（DNS / 代理）");boot=check("开机恢复所选模式（全部停止不自启）");repair=check("故障自动恢复（退避重试，可关闭）");lan=check("代理绕过局域网（DNS53 仍统一接管）");block853=check("限制外部 TCP/UDP 853 · 可能导致应用解析失败");dnsLog=check("记录接管 DNS 查询（本机日志轮转保存）");
         text("自建 DNS · 主 / 从 / 备",19);bootstrap=field("Bootstrap 纯 IP · 仅用于解析自建上游域名");for(int i=0;i<3;i++){hosts[i]=field(new String[]{"主 DNS 地址","从 DNS 地址（可选）","备 DNS 地址（可选）"}[i]);ports[i]=field("端口，例如 31053");ports[i].setInputType(2);}
         text("Mihomo · 仅 TPROXY",19);core=field("核心路径 /data/adb/yutong/mihomo/mihomo");profile=field("原始 YAML 路径 /data/adb/yutong/mihomo/config.yaml");

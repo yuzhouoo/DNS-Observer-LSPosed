@@ -249,6 +249,7 @@ func (d *DNS) forward(q []byte, proto, client string, upstreamOnly bool) []byte 
 			last = whole.Err()
 			break
 		}
+		transport = proto
 		ctx, cancel := context.WithTimeout(whole, 2600*time.Millisecond)
 		answer, last = exchange(ctx, proto, ep.addr, q, true)
 		if last != nil && proto == "udp" {
