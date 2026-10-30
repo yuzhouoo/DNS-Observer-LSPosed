@@ -10,12 +10,13 @@ import android.content.SharedPreferences;
 
 /** Best-effort 15-minute health checks when DNS redirect is OFF. No Root. */
 public final class DnsUpstreamJob extends JobService {
-    private static final int ID=0x444e53;
+    public static final int ID=0x444e53;
     private final DnsJobRuns runs=new DnsJobRuns();
     private final android.os.Handler main=new android.os.Handler(android.os.Looper.getMainLooper());
     public static void schedule(Context ctx) {
         JobScheduler jobs=(JobScheduler)ctx.getSystemService(Context.JOB_SCHEDULER_SERVICE);
         if(jobs==null) return;
+        if(RootRuntimeBridge.selected(ctx)){jobs.cancel(ID);return;}
         try {
             JobInfo existing=jobs.getPendingJob(ID);
             if(existing!=null && existing.isPeriodic() && existing.getIntervalMillis()==15*60*1000L &&
@@ -40,12 +41,13 @@ public final class DnsUpstreamJob extends JobService {
     }
     private boolean mayCheck(DnsJobRuns.Run run){
         SharedPreferences p=getSharedPreferences(DnsForwardService.PREFS,MODE_PRIVATE);
-        return !run.cancelled && !Thread.currentThread().isInterrupted() &&
+        return !RootRuntimeBridge.selected(this) && !run.cancelled && !Thread.currentThread().isInterrupted() &&
             !p.getBoolean("takeover_enabled",false) && "idle".equals(DnsTakeoverService.uiPhase()) &&
             !DnsForwardService.isServing() && !DnsForwardService.isStarting() &&
             !DnsIpv6GlobalController.isRunning() && !DnsStateEpoch.busy();
     }
     @Override public boolean onStartJob(JobParameters params) {
+        if(RootRuntimeBridge.selected(this))return false;
         final DnsJobRuns.Run run=runs.begin();
         getSharedPreferences(DnsForwardService.PREFS,MODE_PRIVATE).edit()
             .putString("upstream_job_status","正在检查是否满足检测条件").putLong("upstream_job_at",System.currentTimeMillis()).apply();

@@ -59,6 +59,7 @@ public final class DnsTakeoverService extends Service {
                 .getString(EVENT_LOG,"");
     }
     public static void requestStart(Context ctx) {
+        if(RootRuntimeBridge.selected(ctx))throw new IllegalStateException("已切换独立后台，请使用三模式控制台");
         Intent i=new Intent(ctx,DnsTakeoverService.class).setAction(ACTION_START);
         ctx.startForegroundService(i);
     }

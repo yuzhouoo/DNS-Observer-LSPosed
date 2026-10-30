@@ -5,6 +5,8 @@ on:
     paths:
       - 'app/**'
       - 'tests/**'
+      - 'runtime/**'
+      - 'module/**'
       - 'build.gradle'
       - 'settings.gradle'
       - '.github/workflows/build-android.yml'
@@ -22,6 +24,24 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.10.2'
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.x'
+          cache: false
+      - name: Test and build independent Root runtime
+        run: |
+          cd runtime
+          go mod tidy
+          gofmt -w .
+          go test -race ./...
+          go vet ./...
+          mkdir -p ../module/bin
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags='-s -w' -o ../module/bin/yutong ./cmd/yutong
+          cd ..
+          for script in module/*.sh; do sh -n "$script"; done
+          python3 tests/test_runtime_wiring.py
+          cd module
+          zip -r ../YuTong-Runtime-v0.7.0-beta1-KernelSU-arm64.zip .
       - name: Install Android SDK packages
         shell: bash
         run: |
@@ -131,14 +151,27 @@ jobs:
           print('Verified: Modern API 102 resources included; no legacy entry')
           PY
       - name: Package complete source snapshot
-        run: git archive --format=zip --output=DNSObserver-v0.6.4-beta13-source.zip HEAD
+        run: git archive --format=zip --output=DNSObserver-v0.7.0-beta1-source.zip HEAD
       - uses: actions/upload-artifact@v4
         with:
-          name: DNSObserver-v0.6.4-beta13-source
-          path: DNSObserver-v0.6.4-beta13-source.zip
+          name: DNSObserver-v0.7.0-beta1-source
+          path: DNSObserver-v0.7.0-beta1-source.zip
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
           name: DNSObserver-debug-apk
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: YuTong-Runtime-KernelSU
+          path: YuTong-Runtime-v0.7.0-beta1-KernelSU-arm64.zip
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Root-runtime-source-formatted
+          path: |
+            runtime/**/*.go
+            runtime/go.mod
+            runtime/go.sum

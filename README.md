@@ -104,3 +104,7 @@ HTTP 观察需要：详细开关 + 包名白名单 + LSPosed 勾选相应应用�
 - Box 进程探测先通过 comm 筛选，再核验完整可执行路径，降低每轮扫描的子进程数。
 - 建议 Box 使用 tproxy、ipv6=true、dns_hijack_mode=disable，保留 dns_hijack_tcp/udp=true 以生成 DNS RETURN；mihomo_dns_forward=disable；performance_mode=false。原始 Box 版本需核对接受的枚举值。优先级100的全局 unreachable 必须在拥有它的模块中关闭，不能与 IPv6 接管同时启用。
 - 接管范围仍为明文 UDP/TCP DNS53；不把 DoH/DoT/DoQ 伪装为已接管。设备实际协作仍需现场验证，模拟与 CI 不能代替真机。
+
+### 独立 Root 后台与三模式（0.7.0-beta1）
+
+新增 APK 三模式控制台与精简 KernelSU 模块，使用用户已有的 arm64 Mihomo 核心，不捆绑核心。只支持 TPROXY；DNS可独立运行。APK不再作为新后台的进程所有者。模块的迁移步骤、开关、运行边界和完整日志位置见 [module/README.md](module/README.md)。新后端默认全部停止，旧接管必须先关闭清理，旧 Box 停止并卸载。历史 DNS 观察、测速、日志保留；切换新后端后旧开机接管和空闲检测任务停用，避免双控制。首次模块安装需重启。

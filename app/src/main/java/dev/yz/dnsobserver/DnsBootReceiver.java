@@ -8,6 +8,7 @@ import android.content.SharedPreferences;
 /** Boot startup is opt-in and requires an explicit previously enabled takeover. */
 public final class DnsBootReceiver extends BroadcastReceiver {
     @Override public void onReceive(Context ctx,Intent intent){
+        if(RootRuntimeBridge.selected(ctx))return;
         if(intent==null||!Intent.ACTION_BOOT_COMPLETED.equals(intent.getAction()))return;
         SharedPreferences p=ctx.getSharedPreferences(DnsForwardService.PREFS,Context.MODE_PRIVATE);
         if(!p.getBoolean("takeover_boot",false)||!p.getBoolean("takeover_enabled",false))return;

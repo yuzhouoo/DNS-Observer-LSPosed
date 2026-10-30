@@ -9,3 +9,6 @@ local.properties
 *.aab
 *.jks
 *.keystore
+
+module/bin/
+YuTong-Runtime-*.zip

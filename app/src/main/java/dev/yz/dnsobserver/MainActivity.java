@@ -99,11 +99,11 @@ public final class MainActivity extends Activity {
         main.addView(overview);TechUi.spaced(overview);
 
         dnsControl = new Button(this);
-        dnsControl.setText("DNS 接管 · 主备 DNS · IP 历史");
+        dnsControl.setText("三模式控制台 · 独立 Root 后台");
         dnsControl.setTextSize(13);
         dnsControl.setAllCaps(false);
         dnsControl.setOnClickListener(v -> startActivity(
-                new Intent(this, DnsControlActivity.class)));
+                new Intent(this, RuntimeControlActivity.class)));
         TechUi.button(dnsControl,TechUi.PRIMARY);
         LinearLayout.LayoutParams launchLp=new LinearLayout.LayoutParams(-1,-2);launchLp.topMargin=dp(12);launchLp.bottomMargin=dp(12);
         main.addView(dnsControl,launchLp);
