@@ -4,12 +4,13 @@
 
 ## 首次迁移
 
-1. 在旧 APK 中关闭并清理接管，停用旧 Box；先备份 Box 的核心、YAML、proxy_provider 与规则文件，再卸载 Box（卸载可能删除它的数据目录）。
-2. 安装配套 APK 和本模块；本次引入开机运行入口，初次安装后重启。
-3. APK 的三模式控制台读取后台；导入已有 arm64 Mihomo ELF 与 YAML。对于使用相对 provider 路径的配置，将完整配置目录放在 `/data/adb/yutong/mihomo/` 或其他 `/data` 下的受保护目录，填写原始 YAML 路径。单个 YAML 导入不包含其引用的 provider 文件。
-4. 填入自建 DNS 主/从/备、端口、Bootstrap 纯 IP；先启用“仅 DNS”并查看 IPv4/IPv6 校验结果。
-5. 确认后启用“DNS + TPROXY”。启用 SIM MATCH 前，填写 YAML 内真实存在的策略组名称（或 DIRECT），避免中文别名不存在。SIM尚未就绪时保留原MATCH并记录等待状态，恢复后继续调整。
-6. 需要重启恢复时勾选开机恢复；“全部停止”会持久化，开机不会擅自恢复旧模式。
+1. 在旧 APK 中关闭并清理接管。备份旧 Box 的核心、完整 YAML、proxy_provider 与规则文件，再停止并卸载 Box（卸载可能删除它的数据目录）。
+2. **先安装本模块，再处理 APK。**模块安装时尝试停止旧 APK，并备份用户0的数据库和偏好到 `/data/adb/yutong/app-backup`，不覆盖已有备份。确认安装日志中的备份结果；若备份未确认，先在旧 APK 导出记录。
+3. 旧构建调试签名不固定，若无法覆盖安装，确认备份后卸载旧 APK、安装新 APK，**暂不要打开新 APK**。
+4. 在 KernelSU 点击本模块“操作”恢复旧记录和参数；已有新数据库时拒绝覆盖。恢复会禁用旧 APP 接管，保留独立后台入口。其他 Android 用户的旧数据需要手动导出，不会自动跨用户读取。
+5. 确认 LSPosed 模块与作用域、授权 Root，首次重启。控制台可导入解压后的 arm64 Mihomo ELF 与 YAML。对于相对 provider 路径，将完整配置目录放入 `/data/adb/yutong/mihomo/` 或其他受保护 `/data` 目录，再填写原始 YAML 路径；单个 YAML 导入不包含它引用的 provider 文件。
+6. 填入自建 DNS 主/从/备、端口、Bootstrap 纯 IP。先测试“仅 DNS”，确认 IPv4/IPv6 校验结果后再启用“DNS + TPROXY”。启用 SIM MATCH 时填写真实存在的策略组或 DIRECT；SIM未知时暂保留原 MATCH。
+7. 按需勾选开机恢复；“全部停止”会持久化，开机不会擅自恢复旧模式。
 
 核心路径默认 `/data/adb/yutong/mihomo/mihomo`，YAML 默认 `config.yaml`；可以导入或指定已有位置。不要把仅有的核心/配置留在待卸载的 Box 目录。
 

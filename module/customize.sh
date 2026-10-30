@@ -8,3 +8,10 @@ set_perm "$MODPATH/action.sh" 0 0 0700
 set_perm "$MODPATH/service.sh" 0 0 0700
 set_perm "$MODPATH/boot-completed.sh" 0 0 0700
 ui_print "初次安装默认全部停止；请在 APK 三模式控制台配置。"
+
+# Preserve the old APK data before a signing-change reinstall. Never overwrite a prior backup.
+if "$MODPATH/bin/yutong" backup-app; then
+  ui_print "旧 APK 数据备份已检查：/data/adb/yutong/app-backup"
+else
+  ui_print "旧 APK 数据备份未确认，请先手动导出旧记录后卸载 APK。"
+fi

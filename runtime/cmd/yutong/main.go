@@ -29,6 +29,10 @@ func run() error {
 		return errors.New("usage: yutong manager|status|apply|boot|cleanup|logs|import-config|proxies|select")
 	}
 	switch args[0] {
+	case "backup-app":
+		return engine.BackupApp(home)
+	case "restore-app":
+		return engine.RestoreApp(home)
 	case "stop":
 		c, e := engine.LoadConfig(home)
 		if e != nil {

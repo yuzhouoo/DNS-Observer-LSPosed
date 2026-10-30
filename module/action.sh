@@ -1,3 +1,5 @@
 #!/system/bin/sh
-# Manager's module action is read-only; APK owns explicit mode changes.
-/data/adb/yutong/bin/yutong status
+# The module-local binary also works before its first boot deployment.
+MODDIR=${0%/*}
+"$MODDIR/bin/yutong" restore-app
+"$MODDIR/bin/yutong" status

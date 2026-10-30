@@ -392,3 +392,22 @@ func TestExactPolicy(t *testing.T) {
 		t.Fatal("wrong mask accepted")
 	}
 }
+
+func TestAppBackupCopy(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir() + "/backup"
+	os.MkdirAll(src+"/nested", 0700)
+	os.WriteFile(src+"/nested/records.db", []byte("original"), 0600)
+	if e := copyDataTree(src, dst, os.Getuid(), os.Getgid()); e != nil {
+		t.Fatal(e)
+	}
+	os.WriteFile(src+"/nested/records.db", []byte("changed"), 0600)
+	b, e := os.ReadFile(dst + "/nested/records.db")
+	if e != nil || string(b) != "original" {
+		t.Fatal("backup was not isolated", e)
+	}
+	os.Symlink("/etc/passwd", src+"/foreign")
+	if copyDataTree(src, t.TempDir()+"/bad", os.Getuid(), os.Getgid()) == nil {
+		t.Fatal("backup followed symlink")
+	}
+}
