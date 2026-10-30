@@ -511,6 +511,19 @@ func Export(home string) map[string]any {
 	return map[string]any{"status": ReadStatus(home), "config": c, "events": Tail(home+"/logs/events.jsonl", 40000), "commands": Tail(home+"/logs/commands.jsonl", 50000), "dns": JSONLines(home + "/logs/dns.jsonl"), "supervisor": Tail(home+"/logs/supervisor.log", 16000), "mihomo": Tail(home+"/logs/mihomo.jsonl", 20000)}
 }
 func Launch(home string) error {
+	mp, e := os.ReadFile(home + "/runtime/module-path")
+	if e != nil {
+		return errors.New("KernelSU 模块未部署，请安装后重启")
+	}
+	moddir := strings.TrimSpace(string(mp))
+	if _, e = os.Stat(moddir + "/module.prop"); e != nil {
+		return errors.New("KernelSU 模块已卸载或不存在")
+	}
+	for _, flag := range []string{"disable", "remove"} {
+		if _, e = os.Stat(moddir + "/" + flag); e == nil {
+			return errors.New("KernelSU 模块处于禁用/待移除状态")
+		}
+	}
 	path := home + "/runtime/supervisor.sh"
 	if _, e := os.Stat(path); e != nil {
 		return errors.New("KernelSU 运行文件未安装")
