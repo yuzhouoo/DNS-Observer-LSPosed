@@ -131,7 +131,8 @@ func (f *fakeRunner) Run(a ...string) (string, error) {
 	f.calls = append(f.calls, append([]string{}, a...))
 	s := strings.Join(a, " ")
 	if f.unsupportedSelectors && strings.Contains(s, " rule ") && strings.Contains(s, " ipproto ") {
-		return "Error: argument \"ipproto\" is wrong: Failed to parse rule type", errors.New("ip: exit status 255")
+		msg := "Error: argument \"ipproto\" is wrong: Failed to parse rule type"
+		return msg, errors.New("ip: exit status 255: " + msg)
 	}
 	if f.routeAvailable && strings.Contains(s, " route get ") {
 		return "198.18.255.53 via 192.0.2.1 dev test0 src 192.0.2.2", nil
