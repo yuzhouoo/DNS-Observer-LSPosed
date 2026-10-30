@@ -115,6 +115,12 @@ func run() error {
 				return e
 			}
 		}
+		if c.Mode == "off" && !engine.IsRunning(home) {
+			if e = engine.CleanupCLI(home); e != nil {
+				return fmt.Errorf("停止意图已保存，但清理未确认: %w", e)
+			}
+			engine.AtomicJSON(home+"/run/status.json", engine.Status{Version: "0.7.0-beta1", Mode: "off", Phase: "off", DNS: "off", Proxy: "off", IPv4: "off", IPv6: "off", Boot: c.Boot, Updated: time.Now().UnixMilli()})
+		}
 		printJSON(map[string]string{"accepted": c.Mode, "message": "运行意图已保存；最终结果以状态校验为准"})
 		return nil
 	case "cleanup":

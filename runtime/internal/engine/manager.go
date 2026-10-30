@@ -520,6 +520,14 @@ func ReadStatus(home string) Status {
 		s.Mode = c.Mode
 		s.Boot = c.Boot
 	}
+	if s.Mode == "off" && s.Phase == "manager_unconfirmed" {
+		b, _ := os.ReadFile(home + "/run/status.json")
+		var old Status
+		json.Unmarshal(b, &old)
+		s.PID = 0
+		s.Phase = "cleanup_unconfirmed"
+		s.Error = "后台已停止；上次清理需核对: " + old.Error
+	}
 	return s
 }
 func Export(home string) map[string]any {
