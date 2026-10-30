@@ -213,6 +213,7 @@ func (m *Manager) apply(c Config) error {
 	}
 	m.retry = 0
 	m.nextRetry = time.Time{}
+	m.status.RetryAt = 0
 	m.lastResolve = time.Now()
 	m.Log.Event("MODE_ACTIVE", "mode=%s ipv4=%t ipv6=%t DNS=verified proxy=%s", c.Mode, c.IPv4, c.IPv6, m.status.Proxy)
 	m.state()
@@ -231,6 +232,9 @@ func (m *Manager) failed(c Config, e error) {
 	seconds := 5 * (1 << min(m.retry-1, 5))
 	m.nextRetry = time.Now().Add(time.Duration(seconds) * time.Second)
 	m.status.RetryAt = m.nextRetry.UnixMilli()
+	if !c.Repair {
+		m.status.RetryAt = 0
+	}
 	m.state()
 }
 func (m *Manager) network() string {
@@ -596,6 +600,9 @@ func (m *Manager) proxyFailed(cfg Config, cause error) {
 	m.status.Error = cause.Error()
 	m.nextRetry = time.Now().Add(10 * time.Second)
 	m.status.RetryAt = m.nextRetry.UnixMilli()
+	if !cfg.Repair {
+		m.status.RetryAt = 0
+	}
 	m.state()
 }
 

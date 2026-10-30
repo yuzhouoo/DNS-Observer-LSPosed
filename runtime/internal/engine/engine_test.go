@@ -308,6 +308,44 @@ func TestKernelTPROXY(t *testing.T) {
 	if e = f.Selftest(cfg); e != nil {
 		t.Fatal(e)
 	}
+
+	// IPv6 blocking/recovery must retain the exact same DNS worker and healthy IPv4.
+	m := NewManager(home)
+	m.FW = &f
+	m.dns = d
+	m.current = cfg
+	m.status.Mode = "dns"
+	m.status.Phase = "running"
+	if _, e = f.ip("6", "rule", "add", "unreachable", "pref", "100"); e != nil {
+		t.Fatal(e)
+	}
+	if !m.adjustFamilies(cfg) || m.current.IPv6 || m.dns != d || m.status.Phase != "partial" {
+		t.Fatal("IPv6 failure did not preserve IPv4 worker")
+	}
+	active := cfg
+	active.IPv6 = false
+	if e = f.Selftest(active); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = f.ip("6", "rule", "del", "unreachable", "pref", "100"); e != nil {
+		t.Fatal(e)
+	}
+	if !m.adjustFamilies(cfg) || !m.current.IPv6 || m.dns != d {
+		t.Fatal("IPv6 recovery restarted/lost DNS")
+	}
+	if e = f.Selftest(cfg); e != nil {
+		t.Fatal(e)
+	}
+	// A dead proxy can downgrade to direct custom DNS without closing DNS listeners.
+	proxyCfg := cfg
+	proxyCfg.Mode = "proxy"
+	m.proxyFailed(proxyCfg, errors.New("injected core exit"))
+	if m.dns != d || m.status.Phase != "proxy_unavailable_dns_running" {
+		t.Fatal("proxy exit lost independent DNS")
+	}
+	if e = f.Selftest(cfg); e != nil {
+		t.Fatal(e)
+	}
 	if e = f.ipt("4", "mangle", "-N", "FOREIGN_TEST"); e != nil {
 		t.Fatal(e)
 	}
@@ -322,5 +360,11 @@ func TestKernelTPROXY(t *testing.T) {
 	}
 	if e = f.ipt("4", "mangle", "-C", "OUTPUT", "-j", "FOREIGN_TEST"); e != nil {
 		t.Fatal("cleanup removed foreign jump")
+	}
+	d.closers[0].Close()
+	select {
+	case <-d.fault:
+	case <-time.After(time.Second):
+		t.Fatal("unexpected UDP listener loss was silent")
 	}
 }
