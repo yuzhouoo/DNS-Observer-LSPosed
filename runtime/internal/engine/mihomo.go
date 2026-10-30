@@ -1,30 +1,327 @@
 package engine
-import("context";"crypto/rand";"encoding/hex";"encoding/json";"errors";"fmt";"io";"net/http";"net";"os";"os/exec";"path/filepath";"regexp";"strconv";"strings";"sync";"syscall";"time";"gopkg.in/yaml.v3")
-type Core struct{mu sync.Mutex;cmd *exec.Cmd;done chan error;Secret string;Home string;Log *Logger;R Runner;group string;cfg Config}
-func(c *Core)prepare(cfg Config,match string)(string,error){return c.prepareAt(cfg,match,c.Home+"/run/mihomo.yaml")}
-func(c *Core)prepareAt(cfg Config,match,path string)(string,error){
- st,e:=os.Stat(cfg.Core);if e!=nil{return "",fmt.Errorf("Mihomo 核心不存在: %w",e)};if !st.Mode().IsRegular()||st.Mode().Perm()&0022!=0{return "",errors.New("Mihomo 核心必须为普通文件且不能允许组/其他用户写入，请 chmod 700")};if e=os.Chmod(cfg.Core,0700);e!=nil{return "",e}
- b,e:=os.ReadFile(cfg.Profile);if e!=nil{return "",e};var m map[string]any;if e=yaml.Unmarshal(b,&m);e!=nil{return "",e};if m==nil{return "",errors.New("Mihomo YAML 为空")}
- m["mode"]="rule";m["tproxy-port"]=ProxyPort;m["port"]=0;m["socks-port"]=0;m["mixed-port"]=0;m["redir-port"]=0;m["listeners"]=nil;m["tun"]=map[string]any{"enable":false};m["routing-mark"]=Egress;m["external-controller"]="127.0.0.1:9097";m["secret"]=c.Secret;m["allow-lan"]=true;m["bind-address"]="*";m["ipv6"]=cfg.IPv6
- // A new managed profile never rewrites the user's original YAML / providers.
- m["dns"]=map[string]any{"enable":true,"listen":"127.0.0.1:1053","enhanced-mode":"redir-host","ipv6":true,"respect-rules":false,"use-system-hosts":false,"default-nameserver":[]string{"127.0.0.1:15354"},"nameserver":[]string{"udp://127.0.0.1:15354"},"proxy-server-nameserver":[]string{"udp://127.0.0.1:15354"},"direct-nameserver":[]string{"udp://127.0.0.1:15354"}}
- if cfg.SIMMatch&&match!=""{if e=rewriteMatch(m,match);e!=nil{return "",e}}
- b,e=yaml.Marshal(m);if e!=nil{return "",e};if e=Atomic(path,b,0600);e!=nil{return "",e}
- // -d preserves relative provider references in the original profile directory.
- ctx,cancel:=context.WithTimeout(context.Background(),20*time.Second);defer cancel();out,e:=exec.CommandContext(ctx,cfg.Core,"-t","-d",filepath.Dir(cfg.Profile),"-f",path).CombinedOutput();if e!=nil{c.Log.Event("CORE_CONFIG_REJECTED","validation failed; see core-validate.log (may contain provider URLs)");Atomic(c.Home+"/logs/core-validate.log",out,0600);return "",errors.New("Mihomo -t 配置校验失败，完整诊断在受保护的 core-validate.log")};return path,nil
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"gopkg.in/yaml.v3"
+	"io"
+	"net"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+)
+
+type Core struct {
+	mu     sync.Mutex
+	cmd    *exec.Cmd
+	done   chan error
+	Secret string
+	Home   string
+	Log    *Logger
+	R      Runner
+	group  string
+	cfg    Config
 }
-func rewriteMatch(m map[string]any,target string)error{valid:=target=="DIRECT"||target=="REJECT";for _,key:=range []string{"proxy-groups","proxies"}{if list,ok:=m[key].([]any);ok{for _,v:=range list{if x,ok:=v.(map[string]any);ok&&x["name"]==target{valid=true}}}};if !valid{return fmt.Errorf("SIM MATCH 目标不存在: %s",target)};rules,ok:=m["rules"].([]any);if !ok{return errors.New("rules 必须为列表")};count:=0;for i,v:=range rules{if s,ok:=v.(string);ok&&strings.HasPrefix(strings.ToUpper(strings.TrimSpace(s)),"MATCH,"){rules[i]="MATCH,"+target;count++}};if count!=1{return errors.New("SIM MATCH 要求恰好一条 MATCH")};m["rules"]=rules;return nil}
-func(c *Core)Start(cfg Config,match string)error{c.cfg=cfg;if c.Secret==""{b:=make([]byte,24);if _,e:=rand.Read(b);e!=nil{return e};c.Secret=hex.EncodeToString(b)};p,e:=c.prepare(cfg,match);if e!=nil{return e};cmd:=exec.Command(cfg.Core,"-d",filepath.Dir(cfg.Profile),"-f",p);cmd.Stdout=logWriter{c.Log,"mihomo"};cmd.Stderr=logWriter{c.Log,"mihomo"};cmd.SysProcAttr=&syscall.SysProcAttr{Setpgid:true,Pdeathsig:syscall.SIGTERM};if e=cmd.Start();e!=nil{return e};c.mu.Lock();c.cmd=cmd;c.done=make(chan error,1);done:=c.done;c.mu.Unlock();go func(){done<-cmd.Wait()}();for n:=0;n<40;n++{if !c.Alive(){return errors.New("Mihomo 在就绪前退出")};if _,e=c.API("GET","/version",nil);e==nil{if ProbeTCP("127.0.0.1:9898")==nil{if cfg.IPv6&&ProbeTCP("[::1]:9898")!=nil{time.Sleep(250*time.Millisecond);continue};c.group=match;return nil}};time.Sleep(250*time.Millisecond)};c.Stop();return errors.New("Mihomo API / TPROXY 监听就绪超时")}
-func ProbeTCP(addr string)error{co,e:=dial(context.Background(),"tcp",addr,true);if e==nil{co.Close()};return e}
-func(c *Core)Alive()bool{c.mu.Lock();defer c.mu.Unlock();if c.cmd==nil{return false};select{case e:=<-c.done:c.Log.Event("CORE_EXIT","%v",e);c.cmd=nil;return false;default:return true}}
-func(c *Core)Stop(){c.mu.Lock();cmd,done:=c.cmd,c.done;c.cmd=nil;c.mu.Unlock();if cmd==nil{return};cmd.Process.Signal(syscall.SIGTERM);select{case <-done:case <-time.After(4*time.Second):cmd.Process.Kill();<-done};c.Log.Event("CORE_STOP","owned child pid=%d exited",cmd.Process.Pid)}
-func(c *Core)API(method,path string,body io.Reader)([]byte,error){if c.Secret==""{return nil,errors.New("Mihomo 未运行")};ctx,cancel:=context.WithTimeout(context.Background(),3*time.Second);defer cancel();req,e:=http.NewRequestWithContext(ctx,method,"http://127.0.0.1:9097"+path,body);if e!=nil{return nil,e};req.Header.Set("Authorization","Bearer "+c.Secret);req.Header.Set("Content-Type","application/json");tr:=&http.Transport{DialContext:func(ctx context.Context,network,addr string)(netConn net.Conn,err error){return dial(ctx,network,addr,true)}};defer tr.CloseIdleConnections();res,e:=(&http.Client{Transport:tr}).Do(req);if e!=nil{return nil,e};defer res.Body.Close();b,e:=io.ReadAll(io.LimitReader(res.Body,2<<20));if res.StatusCode>=300{return nil,fmt.Errorf("Mihomo API rc=%d",res.StatusCode)};return b,e}
-func(c *Core)SIMTarget(cfg Config)(string,error){if !cfg.SIMMatch{return "",nil};s,e:=c.R.Run("settings","get","global","multi_sim_data_call");if e!=nil{return "",e};id,e:=strconv.Atoi(strings.TrimSpace(s));if e!=nil||id<0{return "",errors.New("默认数据 SubId 未知，保留现有 MATCH")};s,e=c.R.Run("content","query","--uri","content://telephony/siminfo","--projection","_id:sim_id");if e!=nil{return "",e};for _,l:=range strings.Split(s,"\n"){re:=regexp.MustCompile(`(?:^|[,\s])_id=`+strconv.Itoa(id)+`(?:[,\s]|$)`);if !re.MatchString(l){continue};r:=regexp.MustCompile(`sim_id=([01])(?:[,\s]|$)`).FindStringSubmatch(l);if len(r)>1{if r[1]=="0"{return cfg.SIM1,nil};return cfg.SIM2,nil}};return "",errors.New("SIM 槽位未知，保留现有 MATCH")}
-func(c *Core)UpdateSIM(cfg Config)error{target,e:=c.SIMTarget(cfg);if e!=nil{return e};if target==c.group{return nil};old,_:=os.ReadFile(c.Home+"/run/mihomo.yaml");p,e:=c.prepare(cfg,target);if e!=nil{return e};body,_:=json.Marshal(map[string]string{"path":p});_,e=c.API("PUT","/configs?force=true",strings.NewReader(string(body)));if e!=nil{Atomic(p,old,0600);return e};c.group=target;c.Log.Event("SIM_MATCH","selected data SIM MATCH=%s (Wi-Fi does not change selection)",target);return nil}
 
-type logWriter struct{log *Logger;kind string}
-func(w logWriter)Write(b []byte)(int,error){w.log.Write(w.kind,string(b));return len(b),nil}
+func (c *Core) prepare(cfg Config, match string) (string, error) {
+	return c.prepareAt(cfg, match, c.Home+"/run/mihomo.yaml")
+}
+func (c *Core) prepareAt(cfg Config, match, path string) (string, error) {
+	st, e := os.Stat(cfg.Core)
+	if e != nil {
+		return "", fmt.Errorf("Mihomo 核心不存在: %w", e)
+	}
+	if !st.Mode().IsRegular() || st.Mode().Perm()&0022 != 0 {
+		return "", errors.New("Mihomo 核心必须为普通文件且不能允许组/其他用户写入，请 chmod 700")
+	}
+	if e = os.Chmod(cfg.Core, 0700); e != nil {
+		return "", e
+	}
+	b, e := os.ReadFile(cfg.Profile)
+	if e != nil {
+		return "", e
+	}
+	var m map[string]any
+	if e = yaml.Unmarshal(b, &m); e != nil {
+		return "", e
+	}
+	if m == nil {
+		return "", errors.New("Mihomo YAML 为空")
+	}
+	delete(m, "interface-name")
+	profileSettings, _ := m["profile"].(map[string]any)
+	if profileSettings == nil {
+		profileSettings = map[string]any{}
+	}
+	profileSettings["store-selected"] = true
+	profileSettings["store-fake-ip"] = false
+	m["profile"] = profileSettings
+	m["mode"] = "rule"
+	m["tproxy-port"] = ProxyPort
+	m["port"] = 0
+	m["socks-port"] = 0
+	m["mixed-port"] = 0
+	m["redir-port"] = 0
+	m["listeners"] = nil
+	m["tun"] = map[string]any{"enable": false}
+	m["routing-mark"] = Egress
+	m["external-controller"] = "127.0.0.1:9097"
+	m["secret"] = c.Secret
+	m["allow-lan"] = true
+	m["bind-address"] = "*"
+	m["ipv6"] = cfg.IPv6
+	// A new managed profile never rewrites the user's original YAML / providers.
+	m["dns"] = map[string]any{"enable": true, "listen": "127.0.0.1:1053", "enhanced-mode": "redir-host", "ipv6": true, "respect-rules": false, "use-system-hosts": false, "default-nameserver": []string{"127.0.0.1:15354"}, "nameserver": []string{"udp://127.0.0.1:15354"}, "proxy-server-nameserver": []string{"udp://127.0.0.1:15354"}, "direct-nameserver": []string{"udp://127.0.0.1:15354"}}
+	if cfg.SIMMatch && match != "" {
+		if e = rewriteMatch(m, match); e != nil {
+			return "", e
+		}
+	}
+	b, e = yaml.Marshal(m)
+	if e != nil {
+		return "", e
+	}
+	if e = Atomic(path, b, 0600); e != nil {
+		return "", e
+	}
+	// -d preserves relative provider references in the original profile directory.
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	out, e := exec.CommandContext(ctx, cfg.Core, "-t", "-d", filepath.Dir(cfg.Profile), "-f", path).CombinedOutput()
+	if e != nil {
+		c.Log.Event("CORE_CONFIG_REJECTED", "validation failed; see core-validate.log (may contain provider URLs)")
+		Atomic(c.Home+"/logs/core-validate.log", out, 0600)
+		return "", errors.New("Mihomo -t 配置校验失败，完整诊断在受保护的 core-validate.log")
+	}
+	return path, nil
+}
+func rewriteMatch(m map[string]any, target string) error {
+	valid := target == "DIRECT" || target == "REJECT"
+	for _, key := range []string{"proxy-groups", "proxies"} {
+		if list, ok := m[key].([]any); ok {
+			for _, v := range list {
+				if x, ok := v.(map[string]any); ok && x["name"] == target {
+					valid = true
+				}
+			}
+		}
+	}
+	if !valid {
+		return fmt.Errorf("SIM MATCH 目标不存在: %s", target)
+	}
+	rules, ok := m["rules"].([]any)
+	if !ok {
+		return errors.New("rules 必须为列表")
+	}
+	count := 0
+	for i, v := range rules {
+		if s, ok := v.(string); ok && strings.HasPrefix(strings.ToUpper(strings.TrimSpace(s)), "MATCH,") {
+			rules[i] = "MATCH," + target
+			count++
+		}
+	}
+	if count != 1 {
+		return errors.New("SIM MATCH 要求恰好一条 MATCH")
+	}
+	m["rules"] = rules
+	return nil
+}
+func (c *Core) Start(cfg Config, match string) error {
+	c.cfg = cfg
+	if c.Secret == "" {
+		b := make([]byte, 24)
+		if _, e := rand.Read(b); e != nil {
+			return e
+		}
+		c.Secret = hex.EncodeToString(b)
+	}
+	p, e := c.prepare(cfg, match)
+	if e != nil {
+		return e
+	}
+	cmd := exec.Command(cfg.Core, "-d", filepath.Dir(cfg.Profile), "-f", p)
+	cmd.Stdout = logWriter{c.Log, "mihomo"}
+	cmd.Stderr = logWriter{c.Log, "mihomo"}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGTERM}
+	if e = cmd.Start(); e != nil {
+		return e
+	}
+	c.mu.Lock()
+	c.cmd = cmd
+	c.done = make(chan error, 1)
+	done := c.done
+	c.mu.Unlock()
+	go func() { done <- cmd.Wait() }()
+	for n := 0; n < 40; n++ {
+		if !c.Alive() {
+			return errors.New("Mihomo 在就绪前退出")
+		}
+		if _, e = c.API("GET", "/version", nil); e == nil {
+			if ProbeTCP("127.0.0.1:9898") == nil {
+				if cfg.IPv6 && ProbeTCP("[::1]:9898") != nil {
+					time.Sleep(250 * time.Millisecond)
+					continue
+				}
+				c.group = match
+				return nil
+			}
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	c.Stop()
+	return errors.New("Mihomo API / TPROXY 监听就绪超时")
+}
+func ProbeTCP(addr string) error {
+	co, e := dial(context.Background(), "tcp", addr, true)
+	if e == nil {
+		co.Close()
+	}
+	return e
+}
+func (c *Core) Alive() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.cmd == nil {
+		return false
+	}
+	select {
+	case e := <-c.done:
+		c.Log.Event("CORE_EXIT", "%v", e)
+		c.cmd = nil
+		return false
+	default:
+		return true
+	}
+}
+func (c *Core) Stop() {
+	c.mu.Lock()
+	cmd, done := c.cmd, c.done
+	c.cmd = nil
+	c.mu.Unlock()
+	if cmd == nil {
+		return
+	}
+	cmd.Process.Signal(syscall.SIGTERM)
+	select {
+	case <-done:
+	case <-time.After(4 * time.Second):
+		cmd.Process.Kill()
+		<-done
+	}
+	c.Log.Event("CORE_STOP", "owned child pid=%d exited", cmd.Process.Pid)
+}
+func (c *Core) API(method, path string, body io.Reader) ([]byte, error) {
+	if c.Secret == "" {
+		return nil, errors.New("Mihomo 未运行")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, e := http.NewRequestWithContext(ctx, method, "http://127.0.0.1:9097"+path, body)
+	if e != nil {
+		return nil, e
+	}
+	req.Header.Set("Authorization", "Bearer "+c.Secret)
+	req.Header.Set("Content-Type", "application/json")
+	tr := &http.Transport{DialContext: func(ctx context.Context, network, addr string) (netConn net.Conn, err error) {
+		return dial(ctx, network, addr, true)
+	}}
+	defer tr.CloseIdleConnections()
+	res, e := (&http.Client{Transport: tr}).Do(req)
+	if e != nil {
+		return nil, e
+	}
+	defer res.Body.Close()
+	b, e := io.ReadAll(io.LimitReader(res.Body, 2<<20))
+	if res.StatusCode >= 300 {
+		return nil, fmt.Errorf("Mihomo API rc=%d", res.StatusCode)
+	}
+	return b, e
+}
+func (c *Core) SIMTarget(cfg Config) (string, error) {
+	if !cfg.SIMMatch {
+		return "", nil
+	}
+	s, e := c.R.Run("settings", "get", "global", "multi_sim_data_call")
+	if e != nil {
+		return "", e
+	}
+	id, e := strconv.Atoi(strings.TrimSpace(s))
+	if e != nil || id < 0 {
+		return "", errors.New("默认数据 SubId 未知，保留现有 MATCH")
+	}
+	s, e = c.R.Run("content", "query", "--uri", "content://telephony/siminfo", "--projection", "_id:sim_id")
+	if e != nil {
+		return "", e
+	}
+	for _, l := range strings.Split(s, "\n") {
+		re := regexp.MustCompile(`(?:^|[,\s])_id=` + strconv.Itoa(id) + `(?:[,\s]|$)`)
+		if !re.MatchString(l) {
+			continue
+		}
+		r := regexp.MustCompile(`sim_id=([01])(?:[,\s]|$)`).FindStringSubmatch(l)
+		if len(r) > 1 {
+			if r[1] == "0" {
+				return cfg.SIM1, nil
+			}
+			return cfg.SIM2, nil
+		}
+	}
+	return "", errors.New("SIM 槽位未知，保留现有 MATCH")
+}
+func (c *Core) UpdateSIM(cfg Config) error {
+	target, e := c.SIMTarget(cfg)
+	if e != nil {
+		return e
+	}
+	if target == c.group {
+		return nil
+	}
+	old, _ := os.ReadFile(c.Home + "/run/mihomo.yaml")
+	p, e := c.prepare(cfg, target)
+	if e != nil {
+		return e
+	}
+	body, _ := json.Marshal(map[string]string{"path": p})
+	_, e = c.API("PUT", "/configs?force=true", strings.NewReader(string(body)))
+	if e != nil {
+		Atomic(p, old, 0600)
+		return e
+	}
+	c.group = target
+	c.Log.Event("SIM_MATCH", "selected data SIM MATCH=%s (Wi-Fi does not change selection)", target)
+	return nil
+}
 
-func ValidateCore(home string,cfg Config)error{
- if cfg.Mode!="proxy"{return nil};l:=NewLogger(home);c:=Core{Home:home,Log:l,R:&Commands{Log:l},Secret:"validation-only"};target,e:=c.SIMTarget(cfg);if e!=nil{return e};path:=fmt.Sprintf("%s/run/validate-%d.yaml",home,os.Getpid());defer os.Remove(path);_,e=c.prepareAt(cfg,target,path);return e
+type logWriter struct {
+	log  *Logger
+	kind string
+}
+
+func (w logWriter) Write(b []byte) (int, error) { w.log.Write(w.kind, string(b)); return len(b), nil }
+
+func ValidateCore(home string, cfg Config) error {
+	if cfg.Mode != "proxy" {
+		return nil
+	}
+	l := NewLogger(home)
+	c := Core{Home: home, Log: l, R: &Commands{Log: l}, Secret: "validation-only"}
+	target, e := c.SIMTarget(cfg)
+	if e != nil {
+		return e
+	}
+	path := fmt.Sprintf("%s/run/validate-%d.yaml", home, os.Getpid())
+	defer os.Remove(path)
+	_, e = c.prepareAt(cfg, target, path)
+	return e
 }
